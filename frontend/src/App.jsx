@@ -4,7 +4,7 @@ import {
   ShoppingCart, Tag, PlusCircle, Globe, Wallet, CheckCircle, CheckCircle2,
   AlertTriangle, MessageSquare, Send, X, UserPlus, UserCheck, Terminal,
   MapPin, Phone, CreditCard, QrCode, ArrowRight, Trash2, ChevronLeft, Package,
-  Wifi, WifiOff, Key, RefreshCw
+  Wifi, WifiOff, Key, RefreshCw, Printer, Coins, Sparkles, Download, FileText
 } from 'lucide-react';
 
 async function getDynamicRoomKey(roomId) {
@@ -80,7 +80,6 @@ async function decryptText(cipherBase64, roomId) {
 export default function App() {
   const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
   
-  // Auto-detect whether running on live cloud deployment (Vercel/Render) or local Wi-Fi
   const isProduction = host.includes('vercel.app') || host.includes('onrender.com');
 
   const apiBaseUrl = isProduction 
@@ -107,6 +106,13 @@ export default function App() {
     const saved = localStorage.getItem('nexus_user');
     return saved ? JSON.parse(saved) : null;
   });
+
+  const [cultBalance, setCultBalance] = useState(0.0);
+  const [topUpModalOpen, setTopUpModalOpen] = useState(false);
+  const [topUpAmount, setTopUpAmount] = useState(10);
+  const [utrInput, setUtrInput] = useState('');
+  const [topUpError, setTopUpError] = useState('');
+  const [topUpReceipt, setTopUpReceipt] = useState(null);
   
   const [wsConnected, setWsConnected] = useState(false);
   const [cart, setCart] = useState([]);
@@ -118,8 +124,9 @@ export default function App() {
     postalCode: '',
     country: 'India'
   });
-  const [paymentMethod, setPaymentMethod] = useState('qr_code');
+  const [paymentMethod, setPaymentMethod] = useState('cult_wallet');
   const [lastOrder, setLastOrder] = useState(null);
+  const [lastReceipt, setLastReceipt] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
 
   const [showPassword, setShowPassword] = useState(false);
@@ -136,7 +143,7 @@ export default function App() {
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3000);
+    setTimeout(() => setToastMessage(''), 3500);
   };
 
   const fetchMarketItems = async () => {
@@ -150,6 +157,21 @@ export default function App() {
       }
     } catch (err) {
       console.warn("Backend API offline:", err);
+    }
+  };
+
+  const fetchWalletBalance = async (username, token) => {
+    if (!username || !token) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/wallet/${username}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCultBalance(data.cultBalance);
+      }
+    } catch (err) {
+      console.warn("Could not fetch wallet balance:", err);
     }
   };
 
@@ -177,9 +199,11 @@ export default function App() {
   useEffect(() => {
     if (user && user.token) {
       localStorage.setItem('nexus_user', JSON.stringify(user));
+      fetchWalletBalance(user.username, user.token);
       fetchUserOrders(user.username, user.token);
     } else {
       localStorage.removeItem('nexus_user');
+      setCultBalance(0.0);
     }
   }, [user]);
 
@@ -319,7 +343,8 @@ export default function App() {
     }));
   };
 
-  const cartTotal = cart.reduce((sum, item) => sum + (parseFloat(item.price) * item.qty), 0).toFixed(2);
+  const cartTotalCULT = cart.reduce((sum, item) => sum + (parseFloat(item.price) * item.qty), 0).toFixed(2);
+  const cartTotalINR = (parseFloat(cartTotalCULT) * 100).toLocaleString('en-IN');
 
   const handleAddressSubmit = (e) => {
     e.preventDefault();
@@ -331,19 +356,44 @@ export default function App() {
   };
 
   const processOrderPayment = async () => {
+    const totalNum = parseFloat(cartTotalCULT);
+
+    if (paymentMethod === 'cult_wallet' && cultBalance < totalNum) {
+      showToast(`Insufficient CULT Balance! You need ${totalNum} CULT. Please top up your wallet.`);
+      return;
+    }
+
+    const orderId = 'NEX-' + Math.floor(100000 + Math.random() * 900000);
+    const receiptId = 'REC-' + Math.floor(10000000 + Math.random() * 90000000);
+    
+    const receiptObj = {
+      receiptId: receiptId,
+      orderId: orderId,
+      date: new Date().toLocaleString(),
+      customerName: shippingForm.fullName,
+      customerPhone: shippingForm.phone,
+      address: `${shippingForm.address}, ${shippingForm.city} - ${shippingForm.postalCode}`,
+      paymentMethod: paymentMethod === 'cult_wallet' ? 'CULT Virtual Wallet' : paymentMethod === 'qr_code' ? 'UPI / Google Pay (Prajjwal Maurya)' : 'Web3 Escrow',
+      items: cart.map(i => ({ title: i.title, seller: i.seller, qty: i.qty, priceCULT: i.price, subtotal: (parseFloat(i.price) * i.qty).toFixed(2) })),
+      totalCULT: cartTotalCULT,
+      totalINR: cartTotalINR,
+      status: 'Escrow Locked & Verified'
+    };
+
     const newOrder = {
-      id: 'NEX-' + Math.floor(100000 + Math.random() * 900000),
+      id: orderId,
       username: user.username,
       items: [...cart],
-      total: cartTotal,
+      total: cartTotalCULT,
       shipping: { ...shippingForm },
       paymentMethod: paymentMethod,
       timestamp: new Date().toLocaleString(),
-      status: 'Escrow Locked / Processing'
+      status: 'Escrow Locked / Processing',
+      receipt: receiptObj
     };
 
     try {
-      await fetch(`${apiBaseUrl}/api/orders`, {
+      const res = await fetch(`${apiBaseUrl}/api/orders`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -351,14 +401,65 @@ export default function App() {
         },
         body: JSON.stringify(newOrder)
       });
+
+      if (!res.ok) {
+        const err = await res.json();
+        showToast(err.detail || "Order processing failed.");
+        return;
+      }
+
+      if (paymentMethod === 'cult_wallet') {
+        setCultBalance(prev => prev - totalNum);
+      }
     } catch (err) {
       console.warn("Could not save order to backend:", err);
     }
 
     setDb(prev => ({ ...prev, orders: [newOrder, ...prev.orders] }));
     setLastOrder(newOrder);
+    setLastReceipt(receiptObj);
     setCart([]);
     setActiveView('order_confirmed');
+  };
+
+  const handleTopUpSubmit = async (e) => {
+    e.preventDefault();
+    setTopUpError('');
+
+    if (!user) return;
+    if (!utrInput || utrInput.trim().length !== 12 || !/^\d{12}$/.test(utrInput.strip ? utrInput.strip() : utrInput.trim())) {
+      setTopUpError("Invalid UTR Reference Number. Please enter the exact 12-digit numeric UPI Ref / UTR / RRN from your UPI app receipt.");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/wallet/topup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({
+          username: user.username,
+          amount: parseFloat(topUpAmount),
+          utr_ref: utrInput.trim()
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setTopUpError(data.detail || "UTR verification failed.");
+        return;
+      }
+
+      setCultBalance(data.cultBalance);
+      setTopUpReceipt(data.receipt);
+      showToast(`UTR Verified! Credited +${topUpAmount} CULT Coins to your wallet.`);
+      setUtrInput('');
+    } catch (err) {
+      setTopUpError("Backend verification request failed. Ensure server is online.");
+    }
   };
 
   const handleAuthChange = (e) => {
@@ -402,8 +503,9 @@ export default function App() {
         token: data.token,
         isVerified: true
       });
+      setCultBalance(0.0);
       setAuthModal(null);
-      showToast(`Node initialized with JWT session: @${data.username}`);
+      showToast(`Node initialized: @${data.username} (0 CULT Balance)`);
     } catch (err) {
       setAuthError("Backend offline. Make sure Python server is running.");
     }
@@ -435,9 +537,10 @@ export default function App() {
         token: userData.token,
         isVerified: true
       });
+      setCultBalance(userData.cultBalance || 0.0);
 
       setAuthModal(null);
-      showToast(`Authenticated with JWT token: @${userData.username}`);
+      showToast(`Authenticated: @${userData.username}`);
     } catch (err) {
       setAuthError("Backend connection error.");
     }
@@ -445,6 +548,7 @@ export default function App() {
 
   const logout = () => {
     setUser(null);
+    setCultBalance(0.0);
     localStorage.removeItem('nexus_user');
     setActiveView('marketplace');
   };
@@ -495,7 +599,7 @@ export default function App() {
     const itemPayload = {
       title: newProduct.title,
       price: newProduct.price.toString(),
-      currency: 'ETH',
+      currency: 'CULT',
       seller: user.username,
       state: 'Available',
       desc: newProduct.desc || 'No description provided.'
@@ -602,7 +706,7 @@ export default function App() {
             )}
 
             <button type="submit" className="w-full bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 font-mono font-bold py-3 rounded-lg transition-all uppercase tracking-widest mt-4">
-              {authModal === 'login' ? 'Authenticate' : 'Initialize Node'}
+              {authModal === 'login' ? 'Authenticate' : 'Initialize Node (0 CULT)'}
             </button>
 
             <div className="text-center pt-3 border-t border-slate-800 mt-4">
@@ -613,6 +717,137 @@ export default function App() {
               )}
             </div>
           </form>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTopUpModal = () => {
+    if (!topUpModalOpen) return null;
+
+    const inrValue = (topUpAmount * 100).toLocaleString('en-IN');
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=upi://pay?pa=prajjwal5655@okicici%26pn=Prajjwal%20Maurya%26am=${topUpAmount * 100}%26cu=INR`;
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4" onClick={(e) => { if(e.target === e.currentTarget) { setTopUpModalOpen(false); setTopUpReceipt(null); } }}>
+        <div className="bg-slate-950 border border-amber-500/40 rounded-xl w-full max-w-md overflow-hidden shadow-2xl relative">
+          
+          <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+            <div className="flex items-center gap-2">
+              <Coins className="text-amber-400 w-5 h-5" />
+              <h2 className="text-lg font-mono font-bold text-white tracking-widest uppercase">
+                Buy CULT Coins
+              </h2>
+            </div>
+            <button onClick={() => { setTopUpModalOpen(false); setTopUpReceipt(null); }} className="text-slate-500 hover:text-white"><X className="w-5 h-5"/></button>
+          </div>
+
+          {topUpReceipt ? (
+            <div className="p-6 space-y-5 font-mono">
+              <div className="bg-emerald-950/30 border border-emerald-800 rounded-xl p-4 text-center space-y-2">
+                <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+                <h3 className="text-white font-bold text-base uppercase">Payment Verified & Credited</h3>
+                <p className="text-emerald-400 text-xs">+{topUpReceipt.cultCredited} CULT Coins added to @{topUpReceipt.username}</p>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2 text-xs">
+                <div className="flex justify-between text-slate-400">
+                  <span>Top-Up Serial:</span>
+                  <span className="text-cyan-400 font-bold">{topUpReceipt.receiptId}</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>12-Digit UTR:</span>
+                  <span className="text-amber-400 font-bold">{topUpReceipt.utrRef}</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>Amount Paid:</span>
+                  <span className="text-white font-bold">₹{topUpReceipt.inrPaid.toLocaleString('en-IN')} INR</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>Recipient:</span>
+                  <span className="text-white">{topUpReceipt.recipientName} ({topUpReceipt.recipientUPI})</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>Timestamp:</span>
+                  <span className="text-slate-300">{topUpReceipt.date}</span>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button onClick={() => window.print()} className="flex-1 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest flex items-center justify-center gap-1">
+                  <Printer className="w-3.5 h-3.5"/> Print Receipt
+                </button>
+                <button onClick={() => { setTopUpModalOpen(false); setTopUpReceipt(null); }} className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest">
+                  Done
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form onSubmit={handleTopUpSubmit} className="p-6 space-y-4">
+              <div className="bg-amber-950/20 border border-amber-800/50 rounded-lg p-3 text-xs font-mono text-amber-300 flex items-center justify-between">
+                <span>Rate: 1 CULT = $1 USD = ₹100 INR</span>
+                <Sparkles className="w-4 h-4 text-amber-400"/>
+              </div>
+
+              {topUpError && (
+                <div className="bg-rose-950/50 border border-rose-900 text-rose-400 p-3 rounded-lg text-xs font-mono flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0"/> {topUpError}
+                </div>
+              )}
+
+              <div>
+                <label className="text-[10px] font-mono text-slate-400 uppercase tracking-widest block mb-1">Select CULT Amount</label>
+                <div className="grid grid-cols-4 gap-2 mb-3">
+                  {[10, 25, 50, 100].map(amt => (
+                    <button key={amt} type="button" onClick={() => setTopUpAmount(amt)} className={`py-2 rounded-lg font-mono text-xs border transition-all ${topUpAmount === amt ? 'bg-amber-500 text-black font-bold border-amber-400' : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'}`}>
+                      +{amt} CULT
+                    </button>
+                  ))}
+                </div>
+
+                <input 
+                  type="number" 
+                  min="1" 
+                  value={topUpAmount} 
+                  onChange={e => setTopUpAmount(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-full bg-black border border-slate-800 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-3">
+                <div className="text-xs font-mono text-slate-400">
+                  Scan to pay <strong className="text-amber-400 font-bold">₹{inrValue} INR</strong> via UPI
+                </div>
+
+                <div className="w-40 h-40 bg-white p-2 mx-auto rounded-lg border-2 border-amber-500/60 shadow-xl flex items-center justify-center">
+                  <img src={qrUrl} alt="Prajjwal Maurya UPI QR Code" className="w-full h-full object-contain" />
+                </div>
+
+                <div className="text-[11px] font-mono text-slate-400">
+                  Recipient: <strong className="text-white">Prajjwal Maurya</strong><br/>
+                  <code className="text-amber-400">prajjwal5655@okicici</code>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-mono text-amber-400 uppercase tracking-widest block mb-1">Enter 12-Digit UPI Ref / UTR Number *</label>
+                <input 
+                  required
+                  type="text" 
+                  maxLength="12"
+                  placeholder="e.g. 423987123901" 
+                  value={utrInput} 
+                  onChange={e => { setUtrInput(e.target.value.replace(/\D/g, '')); setTopUpError(''); }}
+                  className="w-full bg-black border border-amber-500/50 rounded-lg px-4 py-2 text-amber-300 font-mono text-sm tracking-widest focus:border-amber-400 focus:outline-none"
+                />
+                <span className="text-[9px] text-slate-500 font-mono block mt-1">Must be exactly 12 numeric digits from your GPay / PhonePe / Paytm receipt.</span>
+              </div>
+
+              <button type="submit" className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono font-bold py-3 rounded-lg text-xs tracking-widest uppercase transition-all">
+                Verify UTR & Credit +{topUpAmount} CULT
+              </button>
+            </form>
+          )}
         </div>
       </div>
     );
@@ -740,6 +975,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans">
       {renderAuthModal()}
+      {renderTopUpModal()}
       {renderUserProfileModal()}
 
       {toastMessage && (
@@ -778,6 +1014,23 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-4">
+              {/* CULT Wallet Widget */}
+              {user && (
+                <div className="flex items-center bg-slate-900 border border-amber-500/40 rounded-lg px-3 py-1.5 font-mono text-xs gap-2">
+                  <Coins className="w-4 h-4 text-amber-400" />
+                  <div>
+                    <span className="text-amber-400 font-bold">{cultBalance.toFixed(2)} CULT</span>
+                    <span className="text-[10px] text-slate-500 block">≈ ₹{(cultBalance * 100).toLocaleString('en-IN')}</span>
+                  </div>
+                  <button 
+                    onClick={() => setTopUpModalOpen(true)}
+                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] uppercase px-2 py-1 rounded transition-colors ml-1"
+                  >
+                    + Buy CULT
+                  </button>
+                </div>
+              )}
+
               <button onClick={() => setActiveView('cart')} className="relative p-2 text-slate-400 hover:text-white transition-colors">
                 <ShoppingCart className="w-5 h-5" />
                 {cart.length > 0 && (
@@ -809,16 +1062,16 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 py-8">
         
-        {/* VIEW: Marketplace */}
+        {/* Marketplace View */}
         {activeView === 'marketplace' && (
             <div className="space-y-6">
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-slate-800 pb-4 gap-4">
                     <div>
                       <h2 className="text-3xl font-bold text-white tracking-tight font-mono uppercase">Secure Marketplace</h2>
-                      <p className="text-slate-500 font-mono text-sm mt-1 uppercase tracking-widest">Hostel network P2P commerce with escrow.</p>
+                      <p className="text-slate-500 font-mono text-sm mt-1 uppercase tracking-widest">Hostel network P2P commerce with CULT escrow.</p>
                     </div>
-                    <div className="flex items-center gap-2 text-[10px] font-mono text-emerald-500 bg-emerald-950/20 px-3 py-1.5 rounded border border-emerald-900/50 uppercase tracking-widest">
-                      <ShieldCheck className="w-3 h-3" /> JWT & SQLite Persistence Active
+                    <div className="flex items-center gap-2 text-[10px] font-mono text-amber-400 bg-amber-950/20 px-3 py-1.5 rounded border border-amber-900/50 uppercase tracking-widest">
+                      <Coins className="w-3.5 h-3.5" /> 1 CULT = $1 USD = ₹100 INR
                     </div>
                 </div>
                 
@@ -842,7 +1095,8 @@ export default function App() {
                                 </div>
                                 <div className="text-right">
                                   <span className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Cost</span><br/>
-                                  <span className="text-lg font-bold text-white font-mono">{item.price} <span className="text-xs text-emerald-500">{item.currency}</span></span>
+                                  <span className="text-lg font-bold text-amber-400 font-mono">{item.price} <span className="text-xs text-amber-500">{item.currency || 'CULT'}</span></span>
+                                  <span className="text-[10px] text-slate-500 block font-mono">≈ ₹{(parseFloat(item.price) * 100).toLocaleString('en-IN')}</span>
                                 </div>
                             </div>
                             
@@ -862,7 +1116,7 @@ export default function App() {
                                         setActiveView('cart');
                                       }
                                     }}
-                                    className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 py-3 rounded-lg font-mono text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1 font-bold"
+                                    className="bg-amber-950 hover:bg-amber-900 text-amber-400 border border-amber-800 py-3 rounded-lg font-mono text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1 font-bold"
                                 >
                                     <Lock className="w-3.5 h-3.5"/> Buy Now
                                 </button>
@@ -873,7 +1127,7 @@ export default function App() {
             </div>
         )}
 
-        {/* VIEW: Cart */}
+        {/* Cart View */}
         {activeView === 'cart' && (
           <div className="max-w-3xl mx-auto space-y-6">
             <button onClick={() => setActiveView('marketplace')} className="text-slate-500 hover:text-white font-mono text-xs flex items-center gap-2">
@@ -896,7 +1150,7 @@ export default function App() {
                     <div key={item.id} className="pt-4 first:pt-0 flex items-center justify-between gap-4">
                       <div>
                         <h4 className="font-mono font-bold text-white">{item.title}</h4>
-                        <p className="font-mono text-xs text-slate-500">Vendor: @{item.seller} | {item.price} {item.currency}</p>
+                        <p className="font-mono text-xs text-slate-500">Vendor: @{item.seller} | {item.price} CULT (≈ ₹{parseFloat(item.price) * 100})</p>
                       </div>
                       <div className="flex items-center gap-4">
                         <div className="flex items-center border border-slate-700 rounded-lg overflow-hidden bg-slate-950 font-mono text-xs">
@@ -904,8 +1158,8 @@ export default function App() {
                           <span className="px-3 py-1 text-white">{item.qty}</span>
                           <button onClick={() => updateCartQty(item.id, 1)} className="px-3 py-1 text-slate-400 hover:text-white hover:bg-slate-800">+</button>
                         </div>
-                        <span className="font-mono text-sm font-bold text-white w-20 text-right">
-                          {(parseFloat(item.price) * item.qty).toFixed(2)} {item.currency}
+                        <span className="font-mono text-sm font-bold text-amber-400 w-24 text-right">
+                          {(parseFloat(item.price) * item.qty).toFixed(2)} CULT
                         </span>
                         <button onClick={() => removeFromCart(item.id)} className="text-slate-600 hover:text-rose-400"><Trash2 className="w-4 h-4"/></button>
                       </div>
@@ -916,7 +1170,8 @@ export default function App() {
                 <div className="border-t border-slate-800 pt-6 flex justify-between items-center">
                   <div>
                     <span className="text-slate-500 font-mono text-xs uppercase tracking-widest block">Total Escrow Value</span>
-                    <span className="text-2xl font-mono font-bold text-cyan-400">{cartTotal} ETH</span>
+                    <span className="text-2xl font-mono font-bold text-amber-400">{cartTotalCULT} CULT</span>
+                    <span className="text-xs font-mono text-slate-400 block">≈ ₹{cartTotalINR} INR</span>
                   </div>
                   <button 
                     onClick={() => {
@@ -936,7 +1191,7 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW: Checkout - Address */}
+        {/* Shipping Address View */}
         {activeView === 'checkout_address' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <button onClick={() => setActiveView('cart')} className="text-slate-500 hover:text-white font-mono text-xs flex items-center gap-2">
@@ -984,7 +1239,7 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW: Checkout - Payment */}
+        {/* Payment View */}
         {activeView === 'checkout_payment' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <button onClick={() => setActiveView('checkout_address')} className="text-slate-500 hover:text-white font-mono text-xs flex items-center gap-2">
@@ -993,71 +1248,87 @@ export default function App() {
 
             <div className="bg-black border border-slate-800 rounded-xl p-6 space-y-6">
               <h3 className="text-lg font-mono font-bold text-white uppercase tracking-wider flex items-center gap-2 border-b border-slate-800 pb-4">
-                <CreditCard className="text-cyan-400" /> Payment & Escrow Locking
+                <CreditCard className="text-cyan-400" /> Select Payment Rail
               </h3>
 
               <div className="space-y-3">
-                <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block">Select Payment Rail</label>
-                
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-3 gap-3">
+                  <div 
+                    onClick={() => setPaymentMethod('cult_wallet')}
+                    className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1.5 text-center ${paymentMethod === 'cult_wallet' ? 'bg-amber-950/40 border-amber-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
+                  >
+                    <Coins className={`w-5 h-5 ${paymentMethod === 'cult_wallet' ? 'text-amber-400' : 'text-slate-500'}`} />
+                    <div>
+                      <div className="font-mono text-xs font-bold text-white">CULT Wallet</div>
+                      <div className="font-mono text-[9px] text-amber-400">{cultBalance.toFixed(1)} CULT avail.</div>
+                    </div>
+                  </div>
+
                   <div 
                     onClick={() => setPaymentMethod('qr_code')}
-                    className={`p-4 border rounded-xl cursor-pointer transition-all flex items-center gap-3 ${paymentMethod === 'qr_code' ? 'bg-cyan-950/40 border-cyan-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
+                    className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1.5 text-center ${paymentMethod === 'qr_code' ? 'bg-cyan-950/40 border-cyan-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
                   >
                     <QrCode className={`w-5 h-5 ${paymentMethod === 'qr_code' ? 'text-cyan-400' : 'text-slate-500'}`} />
                     <div>
-                      <div className="font-mono text-xs font-bold text-white">UPI / Google Pay</div>
-                      <div className="font-mono text-[10px] text-slate-500">Prajjwal Maurya (UPI)</div>
+                      <div className="font-mono text-xs font-bold text-white">UPI / GPay</div>
+                      <div className="font-mono text-[9px] text-slate-500">Prajjwal Maurya</div>
                     </div>
                   </div>
 
                   <div 
                     onClick={() => setPaymentMethod('web3')}
-                    className={`p-4 border rounded-xl cursor-pointer transition-all flex items-center gap-3 ${paymentMethod === 'web3' ? 'bg-cyan-950/40 border-cyan-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
+                    className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1.5 text-center ${paymentMethod === 'web3' ? 'bg-emerald-950/40 border-emerald-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
                   >
-                    <Wallet className={`w-5 h-5 ${paymentMethod === 'web3' ? 'text-cyan-400' : 'text-slate-500'}`} />
+                    <Wallet className={`w-5 h-5 ${paymentMethod === 'web3' ? 'text-emerald-400' : 'text-slate-500'}`} />
                     <div>
-                      <div className="font-mono text-xs font-bold text-white">Web3 Escrow</div>
-                      <div className="font-mono text-[10px] text-slate-500">MetaMask ETH Lock</div>
+                      <div className="font-mono text-xs font-bold text-white">Web3 Lock</div>
+                      <div className="font-mono text-[9px] text-slate-500">MetaMask ETH</div>
                     </div>
                   </div>
                 </div>
               </div>
 
+              {paymentMethod === 'cult_wallet' && (
+                <div className="bg-amber-950/20 border border-amber-800/50 rounded-xl p-5 text-center space-y-2">
+                  <Coins className="w-8 h-8 text-amber-400 mx-auto" />
+                  <p className="font-mono text-xs text-slate-300">Deducting <strong className="text-amber-400 font-bold">{cartTotalCULT} CULT</strong> from your CULT Virtual Wallet.</p>
+                  <p className="font-mono text-[10px] text-slate-500">Remaining Balance after order: <strong className="text-white">{(cultBalance - parseFloat(cartTotalCULT)).toFixed(2)} CULT</strong></p>
+                </div>
+              )}
+
               {paymentMethod === 'qr_code' && (
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 text-center space-y-4">
                   <div className="space-y-1">
-                    <span className="text-xs font-mono text-slate-400 uppercase tracking-widest block">Scan with any UPI / Google Pay App</span>
+                    <span className="text-xs font-mono text-slate-400 uppercase tracking-widest block">Scan with Google Pay, PhonePe, or Paytm</span>
                     <strong className="text-white font-mono text-sm block">Prajjwal Maurya</strong>
                     <code className="text-cyan-400 font-mono text-xs block bg-black py-1 px-3 rounded inline-block border border-slate-800">prajjwal5655@okicici</code>
                   </div>
 
-                  <div className="w-52 h-52 bg-white p-3 mx-auto rounded-xl shadow-2xl flex items-center justify-center border-2 border-cyan-500/50">
+                  <div className="w-48 h-48 bg-white p-3 mx-auto rounded-xl shadow-2xl flex items-center justify-center border-2 border-cyan-500/50">
                     <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=upi://pay?pa=prajjwal5655@okicici%26pn=Prajjwal%20Maurya%26am=${cartTotal}%26cu=INR`} 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=upi://pay?pa=prajjwal5655@okicici%26pn=Prajjwal%20Maurya%26am=${cartTotalINR}%26cu=INR`} 
                       alt="Prajjwal Maurya UPI QR Code"
                       className="w-full h-full object-contain"
                     />
                   </div>
                   
                   <div className="pt-2 border-t border-slate-900">
-                    <p className="font-mono text-xs text-slate-400">Total Amount to Pay: <strong className="text-emerald-400 font-bold text-sm">{cartTotal} ETH</strong></p>
-                    <p className="font-mono text-[10px] text-slate-600 mt-1">Scan using Google Pay, PhonePe, Paytm, or BHIM</p>
+                    <p className="font-mono text-xs text-slate-400">Total Amount to Pay: <strong className="text-emerald-400 font-bold text-sm">₹{cartTotalINR} INR</strong> ({cartTotalCULT} CULT)</p>
                   </div>
                 </div>
               )}
 
               {paymentMethod === 'web3' && (
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 text-center space-y-3">
-                  <Wallet className="w-10 h-10 text-cyan-400 mx-auto" />
-                  <p className="font-mono text-xs text-slate-400">Smart Contract: <code className="text-cyan-400">0x71C...39A</code></p>
-                  <p className="font-mono text-[11px] text-slate-500">Locking {cartTotal} ETH in decentralized escrow contract.</p>
+                  <Wallet className="w-10 h-10 text-emerald-400 mx-auto" />
+                  <p className="font-mono text-xs text-slate-400">Smart Contract: <code className="text-emerald-400">0x71C...39A</code></p>
+                  <p className="font-mono text-[11px] text-slate-500">Locking {cartTotalCULT} CULT value in decentralized escrow contract.</p>
                 </div>
               )}
 
               <button 
                 onClick={processOrderPayment}
-                className="w-full bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 py-3 rounded-lg font-mono text-xs uppercase tracking-widest font-bold flex items-center justify-center gap-2"
+                className="w-full bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 py-3.5 rounded-lg font-mono text-xs uppercase tracking-widest font-bold flex items-center justify-center gap-2"
               >
                 <Lock className="w-4 h-4"/> Confirm Order & Lock Escrow
               </button>
@@ -1065,34 +1336,93 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW: Order Confirmed */}
-        {activeView === 'order_confirmed' && lastOrder && (
-          <div className="max-w-xl mx-auto bg-black border border-slate-800 rounded-xl p-8 text-center space-y-6 shadow-2xl">
-            <div className="w-16 h-16 bg-emerald-950 rounded-full flex items-center justify-center mx-auto border border-emerald-800">
-              <CheckCircle className="w-8 h-8 text-emerald-400" />
-            </div>
-            <div>
-              <h2 className="text-2xl font-mono font-bold text-white uppercase tracking-wider">Order Confirmed!</h2>
-              <p className="text-slate-500 font-mono text-xs mt-1">Order ID: <span className="text-cyan-400 font-bold">{lastOrder.id}</span></p>
-            </div>
+        {/* Order Confirmed Receipt View */}
+        {activeView === 'order_confirmed' && lastOrder && lastReceipt && (
+          <div className="max-w-2xl mx-auto space-y-6">
+            <div className="bg-black border border-slate-800 rounded-xl p-8 space-y-6 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500 via-cyan-500 to-emerald-500"></div>
 
-            <div className="bg-slate-950 p-4 rounded-lg border border-slate-800 text-left font-mono text-xs space-y-2">
-              <p className="text-slate-400">Deliver To: <strong className="text-white">{lastOrder.shipping.fullName}</strong> ({lastOrder.shipping.phone})</p>
-              <p className="text-slate-400">Address: <span className="text-slate-300">{lastOrder.shipping.address}, {lastOrder.shipping.city}</span></p>
-              <p className="text-slate-400">Status: <span className="text-emerald-400 font-bold">{lastOrder.status}</span></p>
-            </div>
+              <div className="flex items-center justify-between border-b border-slate-800 pb-6">
+                <div>
+                  <div className="flex items-center gap-2 text-white font-mono font-bold text-xl tracking-widest">
+                    <Shield className="w-6 h-6 text-emerald-400" />
+                    <span>NEXUS<span className="text-emerald-400">RECEIPT</span></span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Official Escrow Transaction Record</p>
+                </div>
+                <div className="text-right font-mono">
+                  <span className="bg-emerald-950 text-emerald-400 border border-emerald-800 px-3 py-1 rounded text-xs font-bold uppercase tracking-wider block">
+                    {lastReceipt.status}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-1">{lastReceipt.date}</span>
+                </div>
+              </div>
 
-            <button onClick={() => setActiveView('marketplace')} className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-6 py-3 rounded-lg font-mono text-xs uppercase tracking-widest font-bold">
-              Return to Marketplace
-            </button>
+              <div className="grid grid-cols-2 gap-4 font-mono text-xs bg-slate-950 p-4 rounded-xl border border-slate-800">
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase tracking-widest">Receipt Serial</span>
+                  <span className="text-cyan-400 font-bold">{lastReceipt.receiptId}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase tracking-widest">Order ID</span>
+                  <span className="text-white font-bold">{lastReceipt.orderId}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase tracking-widest">Deliver To</span>
+                  <span className="text-white">{lastReceipt.customerName}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase tracking-widest">Payment Rail</span>
+                  <span className="text-amber-400">{lastReceipt.paymentMethod}</span>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block">Itemized Purchase Summary</span>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800 font-mono text-xs">
+                  {lastReceipt.items.map((item, i) => (
+                    <div key={i} className="p-3 flex justify-between items-center">
+                      <div>
+                        <span className="text-white font-bold">{item.title}</span>
+                        <span className="text-[10px] text-slate-500 block">Vendor: @{item.seller} | Qty: {item.qty}</span>
+                      </div>
+                      <span className="text-amber-400 font-bold">{item.subtotal} CULT</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t border-slate-800 pt-4 flex justify-between items-center font-mono">
+                <div>
+                  <span className="text-slate-500 text-xs uppercase tracking-widest block">Total Paid</span>
+                  <span className="text-2xl font-bold text-amber-400">{lastReceipt.totalCULT} CULT</span>
+                  <span className="text-xs text-slate-400 block">≈ ₹{lastReceipt.totalINR} INR</span>
+                </div>
+
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => window.print()}
+                    className="bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 px-4 py-2.5 rounded-lg text-xs font-mono uppercase tracking-widest flex items-center gap-2"
+                  >
+                    <Printer className="w-4 h-4"/> Print / PDF
+                  </button>
+                  <button 
+                    onClick={() => setActiveView('marketplace')}
+                    className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-4 py-2.5 rounded-lg text-xs font-mono uppercase tracking-widest font-bold"
+                  >
+                    Marketplace
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
-        {/* VIEW: My Orders */}
+        {/* My Orders History View */}
         {activeView === 'my_orders' && (
           <div className="max-w-4xl mx-auto space-y-6">
             <h2 className="text-2xl font-mono font-bold text-white uppercase tracking-wider flex items-center gap-2 border-b border-slate-800 pb-4">
-              <Package className="text-cyan-400" /> Order History
+              <Package className="text-cyan-400" /> Order History & Receipts
             </h2>
 
             {db.orders.length === 0 ? (
@@ -1107,8 +1437,8 @@ export default function App() {
                       <span className="text-cyan-400 font-bold text-sm">{order.id}</span>
                       <span className="text-xs text-emerald-400 bg-emerald-950/40 px-2.5 py-1 rounded border border-emerald-900">{order.status}</span>
                     </div>
-                    <div className="flex justify-between text-xs text-slate-400">
-                      <span>Total: <strong className="text-white">{order.total} ETH</strong></span>
+                    <div className="flex justify-between items-center text-xs text-slate-400">
+                      <span>Total: <strong className="text-amber-400">{order.total} CULT</strong></span>
                       <span>{order.timestamp}</span>
                     </div>
                   </div>
@@ -1118,13 +1448,10 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW: Global Chat */}
         {activeView === 'global_chat' && renderChatInterface('global')}
-
-        {/* VIEW: Private Chat */}
         {activeView === 'private_chat' && renderChatInterface('private')}
 
-        {/* VIEW: Seller Dashboard */}
+        {/* Seller Vendor Console */}
         {activeView === 'dashboard' && user?.role === 'seller' && (
           <div className="space-y-8">
             <div className="border-b border-slate-800 pb-4">
@@ -1141,7 +1468,7 @@ export default function App() {
                   
                   <form onSubmit={handleDeployListing} className="space-y-4">
                     <input required type="text" value={newProduct.title} onChange={e=>setNewProduct({...newProduct, title: e.target.value})} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm" placeholder="Title..." />
-                    <input required type="number" step="0.01" value={newProduct.price} onChange={e=>setNewProduct({...newProduct, price: e.target.value})} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm" placeholder="Price (ETH)..." />
+                    <input required type="number" step="1" value={newProduct.price} onChange={e=>setNewProduct({...newProduct, price: e.target.value})} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm" placeholder="Price (CULT)..." />
                     <textarea required value={newProduct.desc} onChange={e=>setNewProduct({...newProduct, desc: e.target.value})} rows="3" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm resize-none" placeholder="Description..."></textarea>
                     <button type="submit" className="w-full bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 font-mono font-bold py-3 rounded-lg text-xs tracking-widest uppercase">Publish Product</button>
                   </form>
@@ -1153,7 +1480,7 @@ export default function App() {
                     <div key={item.id} className="bg-black border border-slate-800 rounded-xl p-4 flex items-center justify-between">
                       <div>
                         <h4 className="font-bold text-white font-mono">{item.title}</h4>
-                        <p className="text-xs text-emerald-500 font-mono mt-1">{item.price} {item.currency}</p>
+                        <p className="text-xs text-amber-400 font-mono mt-1">{item.price} CULT (≈ ₹{parseFloat(item.price) * 100})</p>
                       </div>
                       <span className="text-[10px] font-mono text-emerald-500 bg-emerald-950/30 px-3 py-1 rounded border border-emerald-900 uppercase tracking-widest">Active</span>
                     </div>

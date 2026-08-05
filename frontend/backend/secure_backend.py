@@ -1,14 +1,19 @@
 import os
 import json
+import sqlite3
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import bcrypt
+import jwt
+import time
+from datetime import datetime, timedelta
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from passlib.context import CryptContext
 from typing import Dict, List, Optional
 
-app = FastAPI(title="Secure Market API")
+app = FastAPI(title="Nexus Secure Marketplace & CULT Relay API")
 
+# Enable CORS for local Wi-Fi and production cloud domains
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,37 +22,154 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+DB_FILE = "marketplace.db"
+JWT_SECRET = "NEXUS_JWT_SUPER_SECRET_KEY_HOSTEL_2026_SECURITY_TOKEN"
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_HOURS = 24
+
+# Simple memory storage for login rate limiting
+LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+
+def hash_password(password: str) -> str:
+    """Hash password securely using native bcrypt with 72-byte truncation safety."""
+    pwd_bytes = password.encode('utf-8')[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify input password against stored bcrypt hash."""
+    pwd_bytes = plain_password.encode('utf-8')[:72]
+    hashed_bytes = hashed_password.encode('utf-8')
+    try:
+        return bcrypt.checkpw(pwd_bytes, hashed_bytes)
+    except Exception:
+        return False
+
+def create_access_token(data: dict) -> str:
+    """Generate cryptographically signed JWT token valid for 24 hours."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_jwt_token(token: str) -> dict:
+    """Validate incoming JWT token and return decoded user payload."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired. Please re-authenticate.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid security token.")
+
+def init_db():
+    """Initialize SQLite database schema including CULT wallets and orders."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # Users table with cult_balance column
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            email TEXT,
+            hashed_password TEXT NOT NULL,
+            role TEXT NOT NULL,
+            cult_balance REAL DEFAULT 100.0
+        )
+    ''')
+    
+    # Marketplace items table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            price TEXT NOT NULL,
+            currency TEXT DEFAULT 'CULT',
+            seller TEXT NOT NULL,
+            state TEXT DEFAULT 'Available',
+            desc TEXT
+        )
+    ''')
+    
+    # Chat history table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            text TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    ''')
+    
+    # Orders table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            items_json TEXT NOT NULL,
+            total TEXT NOT NULL,
+            shipping_json TEXT NOT NULL,
+            payment_method TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            status TEXT NOT NULL,
+            receipt_json TEXT
+        )
+    ''')
+    
+    # Seed default marketplace items if database is empty
+    cursor.execute("SELECT COUNT(*) FROM items")
+    if cursor.fetchone()[0] == 0:
+        seed_items = [
+            ("Zero-Log Encrypted Router", "50", "CULT", "SecureTech", "Available", "Hardware firewall router pre-configured with zero-log VPN protocol."),
+            ("Anonymous Node Config Script", "15", "CULT", "NetNinja", "Available", "Self-hosted encrypted relay server configuration scripts with automatic kill-switch."),
+            ("Hardware Crypto Cold Wallet", "25", "CULT", "CryptoVault", "Available", "Tamper-proof physical hardware wallet for offline private key storage.")
+        ]
+        cursor.executemany("INSERT INTO items (title, price, currency, seller, state, desc) VALUES (?, ?, ?, ?, ?, ?)", seed_items)
+        
+    conn.commit()
+    conn.close()
+
+init_db()
 
 class ItemModel(BaseModel):
-    id: int
+    id: Optional[int] = None
     title: str
     price: str
-    currency: str = "ETH"
+    currency: str = "CULT"
     seller: str
     state: str = "Available"
     desc: str
 
-class MessageModel(BaseModel):
-    id: int
-    sender: str
-    text: str
-    timestamp: str
+class AuthRegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    role: str = "buyer"
 
-class AuthRequest(BaseModel):
+class AuthLoginRequest(BaseModel):
     username: str
     password: str
-    email: Optional[str] = "user@secure.net"
+
+class TopUpRequest(BaseModel):
+    username: str
+    amount: float
+    utr_ref: Optional[str] = None
+
+class OrderModel(BaseModel):
+    id: str
+    username: str
+    items: List[dict]
+    total: str
+    shipping: dict
+    paymentMethod: str
+    timestamp: str
+    status: str
+    receipt: Optional[dict] = None
 
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
-        self.global_history: List[dict] = []
-        self.items_store: List[dict] = [
-            { "id": 1, "title": "Zero-Log Encrypted Router", "price": "0.5", "currency": "ETH", "seller": "SecureTech", "state": "Available", "desc": "Military-grade hardware firewall router with zero tracking." },
-            { "id": 2, "title": "Anonymous VPN Server Config", "price": "0.1", "currency": "ETH", "seller": "NetNinja", "state": "Available", "desc": "Self-hosted VPN configuration scripts with automated kill-switch." },
-            { "id": 3, "title": "Hardware Crypto Cold Wallet", "price": "0.25", "currency": "ETH", "seller": "CryptoVault", "state": "Available", "desc": "Tamper-proof hardware wallet for offline private key storage." }
-        ]
 
     async def connect(self, websocket: WebSocket, room_id: str):
         await websocket.accept()
@@ -61,10 +183,14 @@ class ConnectionManager:
                 self.active_connections[room_id].remove(websocket)
 
     async def broadcast(self, message: dict, room_id: str):
-        if room_id == "global":
-            self.global_history.append(message)
-            if len(self.global_history) > 100:
-                self.global_history.pop(0)
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO messages (room_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+            (room_id, message.get("sender", "System"), message.get("text", ""), message.get("timestamp", ""))
+        )
+        conn.commit()
+        conn.close()
 
         if room_id in self.active_connections:
             message_str = json.dumps(message)
@@ -78,59 +204,299 @@ manager = ConnectionManager()
 
 @app.get("/")
 async def root():
-    return {"status": "online", "system": "Nexus Market Relay"}
+    return {"status": "online", "system": "Nexus Secure Marketplace & CULT Relay API"}
 
 @app.get("/api/items")
 async def get_items():
-    return manager.items_store
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, price, currency, seller, state, desc FROM items ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    items = []
+    for r in rows:
+        items.append({
+            "id": r[0],
+            "title": r[1],
+            "price": r[2],
+            "currency": r[3],
+            "seller": r[4],
+            "state": r[5],
+            "desc": r[6]
+        })
+    return items
 
 @app.post("/api/items")
-async def create_item(item: ItemModel):
-    item_dict = item.dict()
-    manager.items_store.insert(0, item_dict)
-    return item_dict
+async def create_item(item: ItemModel, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO items (title, price, currency, seller, state, desc) VALUES (?, ?, ?, ?, ?, ?)",
+        (item.title, item.price, item.currency, user_payload["username"], item.state, item.desc)
+    )
+    new_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    
+    res = item.dict()
+    res["id"] = new_id
+    res["seller"] = user_payload["username"]
+    return res
 
 @app.post("/api/auth/register")
-async def register(req: AuthRequest):
-    return {"status": "success", "username": req.username, "msg": "Node initialized."}
+async def register(req: AuthRegisterRequest):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username FROM users WHERE username = ?", (req.username,))
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="Username already exists in registry.")
+    
+    hashed_pw = hash_password(req.password)
+    initial_balance = 100.0  # Starter CULT coins for new nodes
+    cursor.execute(
+        "INSERT INTO users (username, email, hashed_password, role, cult_balance) VALUES (?, ?, ?, ?, ?)",
+        (req.username, req.email, hashed_pw, req.role, initial_balance)
+    )
+    conn.commit()
+    conn.close()
+    
+    token = create_access_token({"username": req.username, "role": req.role, "email": req.email})
+    return {
+        "status": "success",
+        "username": req.username,
+        "role": req.role,
+        "token": token,
+        "cultBalance": initial_balance
+    }
 
 @app.post("/api/auth/login")
-async def login(req: AuthRequest):
-    return {"status": "success", "username": req.username, "token": "mock_jwt_token"}
+async def login(req: AuthLoginRequest):
+    now = time.time()
+    user_attempts = [t for t in LOGIN_ATTEMPTS.get(req.username, []) if now - t < 60]
+    if len(user_attempts) >= 5:
+        raise HTTPException(status_code=429, detail="Too many failed login attempts. Please wait 60 seconds.")
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, email, hashed_password, role, cult_balance FROM users WHERE username = ?", (req.username,))
+    user_row = cursor.fetchone()
+    conn.close()
+    
+    if not user_row or not verify_password(req.password, user_row[2]):
+        user_attempts.append(now)
+        LOGIN_ATTEMPTS[req.username] = user_attempts
+        raise HTTPException(status_code=401, detail="Invalid alias or passphrase.")
+    
+    LOGIN_ATTEMPTS[req.username] = []
+    token = create_access_token({"username": user_row[0], "role": user_row[3], "email": user_row[1]})
+    
+    return {
+        "status": "success",
+        "username": user_row[0],
+        "email": user_row[1],
+        "role": user_row[3],
+        "token": token,
+        "cultBalance": user_row[4] if len(user_row) > 4 and user_row[4] is not None else 100.0
+    }
+
+@app.get("/api/wallet/{username}")
+async def get_wallet_balance(username: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    verify_jwt_token(token)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    balance = row[0] if row and row[0] is not None else 0.0
+    return {"username": username, "cultBalance": balance}
+
+@app.post("/api/wallet/topup")
+async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    
+    if user_payload["username"] != req.username:
+        raise HTTPException(status_code=403, detail="Unauthorized wallet modification.")
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (req.username,))
+    row = cursor.fetchone()
+    current_bal = row[0] if row and row[0] is not None else 0.0
+    
+    new_balance = current_bal + req.amount
+    cursor.execute("UPDATE users SET cult_balance = ? WHERE username = ?", (new_balance, req.username))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "success", "username": req.username, "cultBalance": new_balance, "credited": req.amount}
+
+@app.get("/api/orders/{username}")
+async def get_orders(username: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    
+    if user_payload["username"] != username:
+        raise HTTPException(status_code=403, detail="Access denied: Cannot fetch order history for another user.")
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, items_json, total, shipping_json, payment_method, timestamp, status, receipt_json FROM orders WHERE username = ? ORDER BY rowid DESC", (username,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    orders = []
+    for r in rows:
+        orders.append({
+            "id": r[0],
+            "username": r[1],
+            "items": json.loads(r[2]),
+            "total": r[3],
+            "shipping": json.loads(r[4]),
+            "paymentMethod": r[5],
+            "timestamp": r[6],
+            "status": r[7],
+            "receipt": json.loads(r[8]) if r[8] else None
+        })
+    return orders
+
+@app.post("/api/orders")
+async def create_order(order: OrderModel, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # If paying via CULT Wallet, verify and deduct balance
+    if order.paymentMethod == 'cult_wallet':
+        cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (user_payload["username"],))
+        row = cursor.fetchone()
+        current_bal = row[0] if row and row[0] is not None else 0.0
+        order_total = float(order.total)
+        
+        if current_bal < order_total:
+            conn.close()
+            raise HTTPException(status_code=400, detail=f"Insufficient CULT Balance. You have {current_bal} CULT, but order total is {order_total} CULT.")
+            
+        new_balance = current_bal - order_total
+        cursor.execute("UPDATE users SET cult_balance = ? WHERE username = ?", (new_balance, user_payload["username"]))
+
+    cursor.execute(
+        "INSERT INTO orders (id, username, items_json, total, shipping_json, payment_method, timestamp, status, receipt_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            order.id,
+            order.username,
+            json.dumps(order.items),
+            order.total,
+            json.dumps(order.shipping),
+            order.paymentMethod,
+            order.timestamp,
+            order.status,
+            json.dumps(order.receipt) if order.receipt else None
+        )
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "success", "order_id": order.id}
 
 @app.websocket("/ws/chat/global")
-async def global_chat_ws(websocket: WebSocket):
+async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None)):
+    if not token:
+        await websocket.close(code=4001)
+        return
+    
+    try:
+        user_payload = verify_jwt_token(token)
+    except Exception:
+        await websocket.close(code=4003)
+        return
+
     await manager.connect(websocket, "global")
     try:
-        for past_msg in manager.global_history:
-            await websocket.send_text(json.dumps(past_msg))
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, sender, text, timestamp FROM messages WHERE room_id = 'global' ORDER BY id ASC LIMIT 50")
+        history = cursor.fetchall()
+        conn.close()
+        
+        for msg in history:
+            msg_obj = {"id": msg[0], "sender": msg[1], "text": msg[2], "timestamp": msg[3]}
+            await websocket.send_text(json.dumps(msg_obj))
             
         while True:
             raw_data = await websocket.receive_text()
+            if len(raw_data) > 4096:
+                continue
             try:
                 msg_data = json.loads(raw_data)
+                msg_data["sender"] = user_payload["username"]
                 await manager.broadcast(msg_data, "global")
             except json.JSONDecodeError:
-                msg_obj = {
-                    "id": int(os.urandom(4).hex(), 16),
-                    "sender": "Anonymous",
-                    "text": raw_data,
-                    "timestamp": ""
-                }
-                await manager.broadcast(msg_obj, "global")
+                pass
     except WebSocketDisconnect:
         manager.disconnect(websocket, "global")
 
 @app.websocket("/ws/chat/private/{room_id}")
-async def private_chat_ws(websocket: WebSocket, room_id: str):
+async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[str] = Query(None)):
+    if not token:
+        await websocket.close(code=4001)
+        return
+    
+    try:
+        user_payload = verify_jwt_token(token)
+    except Exception:
+        await websocket.close(code=4003)
+        return
+
+    if user_payload["username"] not in room_id.split("_"):
+        await websocket.close(code=4003)
+        return
+
     await manager.connect(websocket, room_id)
     try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, sender, text, timestamp FROM messages WHERE room_id = ? ORDER BY id ASC LIMIT 50", (room_id,))
+        history = cursor.fetchall()
+        conn.close()
+        
+        for msg in history:
+            msg_obj = {"id": msg[0], "sender": msg[1], "text": msg[2], "timestamp": msg[3]}
+            await websocket.send_text(json.dumps(msg_obj))
+            
         while True:
-            data = await websocket.receive_text()
+            raw_data = await websocket.receive_text()
+            if len(raw_data) > 4096:
+                continue
             try:
-                msg_obj = json.loads(data)
-                await manager.broadcast(msg_obj, room_id)
-            except Exception:
+                msg_data = json.loads(raw_data)
+                msg_data["sender"] = user_payload["username"]
+                await manager.broadcast(msg_data, room_id)
+            except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
         manager.disconnect(websocket, room_id)
