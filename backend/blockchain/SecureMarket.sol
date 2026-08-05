@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// OpenZeppelin ReentrancyGuard prevents malicious contracts from draining funds
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 contract SecureMarket is ReentrancyGuard {
@@ -30,7 +29,6 @@ constructor() {
     platformOwner = msg.sender;
 }
 
-// Seller lists an item for a specific price
 function listItem(string memory _title, uint256 _price) external {
     require(_price > 0, "Price must be greater than 0");
     
@@ -47,7 +45,6 @@ function listItem(string memory _title, uint256 _price) external {
     emit ItemListed(itemCounter, msg.sender, _title, _price);
 }
 
-// Buyer pays, funds stay LOCKED in the contract (Escrow)
 function purchaseItem(uint256 _id) external payable nonReentrant {
     Item storage item = items[_id];
     require(item.state == ItemState.Available, "Item not available");
@@ -60,7 +57,6 @@ function purchaseItem(uint256 _id) external payable nonReentrant {
     emit PaymentLocked(_id, msg.sender);
 }
 
-// Buyer confirms receipt, funds are released to seller
 function confirmReceipt(uint256 _id) external nonReentrant {
     Item storage item = items[_id];
     require(item.state == ItemState.LockedInEscrow, "Item not in escrow");
@@ -68,7 +64,6 @@ function confirmReceipt(uint256 _id) external nonReentrant {
 
     item.state = ItemState.Completed;
     
-    // Transfer funds to seller securely
     (bool success, ) = item.seller.call{value: item.price}("");
     require(success, "Transfer failed");
 
