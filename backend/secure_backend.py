@@ -5,15 +5,15 @@ import uvicorn
 import bcrypt
 import jwt
 import time
+import re
 from datetime import datetime, timedelta
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
-app = FastAPI(title="Nexus Secure Marketplace & Relay API")
+app = FastAPI(title="Nexus Secure Marketplace & CULT Relay API")
 
-# Enable CORS for cross-device access on local Wi-Fi / hostel network
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,17 +27,14 @@ JWT_SECRET = "NEXUS_JWT_SUPER_SECRET_KEY_HOSTEL_2026_SECURITY_TOKEN"
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
-# Simple memory storage for login rate limiting
 LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
 
 def hash_password(password: str) -> str:
-    """Hash password securely using native bcrypt with 72-byte truncation safety."""
     pwd_bytes = password.encode('utf-8')[:72]
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify input password against stored bcrypt hash."""
     pwd_bytes = plain_password.encode('utf-8')[:72]
     hashed_bytes = hashed_password.encode('utf-8')
     try:
@@ -46,14 +43,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 def create_access_token(data: dict) -> str:
-    """Generate cryptographically signed JWT token valid for 24 hours."""
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def verify_jwt_token(token: str) -> dict:
-    """Validate incoming JWT token and return decoded user payload."""
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return payload
@@ -63,17 +58,17 @@ def verify_jwt_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid security token.")
 
 def init_db():
-    """Initialize SQLite database schema and seed initial marketplace listings."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # Users table
+    # Users table (initial cult_balance DEFAULT 0.0)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
             email TEXT,
             hashed_password TEXT NOT NULL,
-            role TEXT NOT NULL
+            role TEXT NOT NULL,
+            cult_balance REAL DEFAULT 0.0
         )
     ''')
     
@@ -83,7 +78,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             price TEXT NOT NULL,
-            currency TEXT DEFAULT 'ETH',
+            currency TEXT DEFAULT 'CULT',
             seller TEXT NOT NULL,
             state TEXT DEFAULT 'Available',
             desc TEXT
@@ -111,17 +106,31 @@ def init_db():
             shipping_json TEXT NOT NULL,
             payment_method TEXT NOT NULL,
             timestamp TEXT NOT NULL,
+            status TEXT NOT NULL,
+            receipt_json TEXT
+        )
+    ''')
+
+    # UTR verification & transaction table (prevents duplicate UTR replay attacks)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS utr_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            utr_ref TEXT UNIQUE NOT NULL,
+            username TEXT NOT NULL,
+            cult_amount REAL NOT NULL,
+            inr_amount REAL NOT NULL,
+            timestamp TEXT NOT NULL,
             status TEXT NOT NULL
         )
     ''')
     
-    # Seed default items if empty
+    # Seed default marketplace items if database is empty
     cursor.execute("SELECT COUNT(*) FROM items")
     if cursor.fetchone()[0] == 0:
         seed_items = [
-            ("Zero-Log Encrypted Router", "0.5", "ETH", "SecureTech", "Available", "Military-grade hardware firewall router with zero tracking."),
-            ("Anonymous VPN Server Config", "0.1", "ETH", "NetNinja", "Available", "Self-hosted VPN configuration scripts with automated kill-switch."),
-            ("Hardware Crypto Cold Wallet", "0.25", "ETH", "CryptoVault", "Available", "Tamper-proof hardware wallet for offline private key storage.")
+            ("Zero-Log Encrypted Router", "50", "CULT", "SecureTech", "Available", "Hardware firewall router pre-configured with zero-log VPN protocol."),
+            ("Anonymous Node Config Script", "15", "CULT", "NetNinja", "Available", "Self-hosted encrypted relay server configuration scripts with automatic kill-switch."),
+            ("Hardware Crypto Cold Wallet", "25", "CULT", "CryptoVault", "Available", "Tamper-proof physical hardware wallet for offline private key storage.")
         ]
         cursor.executemany("INSERT INTO items (title, price, currency, seller, state, desc) VALUES (?, ?, ?, ?, ?, ?)", seed_items)
         
@@ -134,7 +143,7 @@ class ItemModel(BaseModel):
     id: Optional[int] = None
     title: str
     price: str
-    currency: str = "ETH"
+    currency: str = "CULT"
     seller: str
     state: str = "Available"
     desc: str
@@ -149,6 +158,11 @@ class AuthLoginRequest(BaseModel):
     username: str
     password: str
 
+class TopUpRequest(BaseModel):
+    username: str
+    amount: float
+    utr_ref: str
+
 class OrderModel(BaseModel):
     id: str
     username: str
@@ -158,6 +172,7 @@ class OrderModel(BaseModel):
     paymentMethod: str
     timestamp: str
     status: str
+    receipt: Optional[dict] = None
 
 class ConnectionManager:
     def __init__(self):
@@ -175,7 +190,6 @@ class ConnectionManager:
                 self.active_connections[room_id].remove(websocket)
 
     async def broadcast(self, message: dict, room_id: str):
-        # Save message to SQLite database permanently
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute(
@@ -185,7 +199,6 @@ class ConnectionManager:
         conn.commit()
         conn.close()
 
-        # Broadcast live message to all active clients in room
         if room_id in self.active_connections:
             message_str = json.dumps(message)
             for connection in self.active_connections[room_id]:
@@ -198,7 +211,7 @@ manager = ConnectionManager()
 
 @app.get("/")
 async def root():
-    return {"status": "online", "system": "Nexus Secure Marketplace & Relay API"}
+    return {"status": "online", "system": "Nexus Secure Marketplace & CULT Relay API"}
 
 @app.get("/api/items")
 async def get_items():
@@ -251,22 +264,28 @@ async def register(req: AuthRegisterRequest):
     cursor.execute("SELECT username FROM users WHERE username = ?", (req.username,))
     if cursor.fetchone():
         conn.close()
-        raise HTTPException(status_code=400, detail="Username already exists in node registry.")
+        raise HTTPException(status_code=400, detail="Username already exists in registry.")
     
     hashed_pw = hash_password(req.password)
+    initial_balance = 0.0  # User starts with 0 CULT coins
     cursor.execute(
-        "INSERT INTO users (username, email, hashed_password, role) VALUES (?, ?, ?, ?)",
-        (req.username, req.email, hashed_pw, req.role)
+        "INSERT INTO users (username, email, hashed_password, role, cult_balance) VALUES (?, ?, ?, ?, ?)",
+        (req.username, req.email, hashed_pw, req.role, initial_balance)
     )
     conn.commit()
     conn.close()
     
     token = create_access_token({"username": req.username, "role": req.role, "email": req.email})
-    return {"status": "success", "username": req.username, "role": req.role, "token": token}
+    return {
+        "status": "success",
+        "username": req.username,
+        "role": req.role,
+        "token": token,
+        "cultBalance": initial_balance
+    }
 
 @app.post("/api/auth/login")
 async def login(req: AuthLoginRequest):
-    # Rate Limiting: Max 5 login attempts per username every 60 seconds
     now = time.time()
     user_attempts = [t for t in LOGIN_ATTEMPTS.get(req.username, []) if now - t < 60]
     if len(user_attempts) >= 5:
@@ -274,7 +293,7 @@ async def login(req: AuthLoginRequest):
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, email, hashed_password, role FROM users WHERE username = ?", (req.username,))
+    cursor.execute("SELECT username, email, hashed_password, role, cult_balance FROM users WHERE username = ?", (req.username,))
     user_row = cursor.fetchone()
     conn.close()
     
@@ -283,7 +302,6 @@ async def login(req: AuthLoginRequest):
         LOGIN_ATTEMPTS[req.username] = user_attempts
         raise HTTPException(status_code=401, detail="Invalid alias or passphrase.")
     
-    # Reset attempts on success
     LOGIN_ATTEMPTS[req.username] = []
     token = create_access_token({"username": user_row[0], "role": user_row[3], "email": user_row[1]})
     
@@ -292,7 +310,97 @@ async def login(req: AuthLoginRequest):
         "username": user_row[0],
         "email": user_row[1],
         "role": user_row[3],
-        "token": token
+        "token": token,
+        "cultBalance": user_row[4] if len(user_row) > 4 and user_row[4] is not None else 0.0
+    }
+
+@app.get("/api/wallet/{username}")
+async def get_wallet_balance(username: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    verify_jwt_token(token)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    balance = row[0] if row and row[0] is not None else 0.0
+    return {"username": username, "cultBalance": balance}
+
+@app.post("/api/wallet/topup")
+async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    
+    if user_payload["username"] != req.username:
+        raise HTTPException(status_code=403, detail="Unauthorized wallet modification.")
+
+    # Validate UTR format (Must be exactly 12 numeric digits for standard Indian UPI transactions)
+    clean_utr = req.utr_ref.strip()
+    if not re.match(r"^\d{12}$", clean_utr):
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid UTR Reference Number. UPI UTR / RRN must be exactly a 12-digit numeric code from your UPI payment receipt."
+        )
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Check if UTR has already been redeemed
+    cursor.execute("SELECT utr_ref, username FROM utr_transactions WHERE utr_ref = ?", (clean_utr,))
+    existing_utr = cursor.fetchone()
+    if existing_utr:
+        conn.close()
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Security Violation: UTR {clean_utr} has already been redeemed and processed by @{existing_utr[1]}."
+        )
+
+    # Fetch current user wallet balance
+    cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (req.username,))
+    row = cursor.fetchone()
+    current_bal = row[0] if row and row[0] is not None else 0.0
+    
+    new_balance = current_bal + req.amount
+    inr_amount = req.amount * 100.0
+    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Record UTR payment transaction
+    cursor.execute(
+        "INSERT INTO utr_transactions (utr_ref, username, cult_amount, inr_amount, timestamp, status) VALUES (?, ?, ?, ?, ?, ?)",
+        (clean_utr, req.username, req.amount, inr_amount, timestamp_str, "VERIFIED_AND_CREDITED")
+    )
+
+    # Credit wallet
+    cursor.execute("UPDATE users SET cult_balance = ? WHERE username = ?", (new_balance, req.username))
+    conn.commit()
+    conn.close()
+    
+    topup_receipt = {
+        "receiptId": f"TOP-{int(time.time())}",
+        "utrRef": clean_utr,
+        "username": req.username,
+        "cultCredited": req.amount,
+        "inrPaid": inr_amount,
+        "date": timestamp_str,
+        "recipientUPI": "prajjwal5655@okicici",
+        "recipientName": "Prajjwal Maurya",
+        "status": "Verified & Credited"
+    }
+
+    return {
+        "status": "success", 
+        "username": req.username, 
+        "cultBalance": new_balance, 
+        "credited": req.amount,
+        "receipt": topup_receipt
     }
 
 @app.get("/api/orders/{username}")
@@ -308,7 +416,7 @@ async def get_orders(username: str, authorization: Optional[str] = Header(None))
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, username, items_json, total, shipping_json, payment_method, timestamp, status FROM orders WHERE username = ? ORDER BY rowid DESC", (username,))
+    cursor.execute("SELECT id, username, items_json, total, shipping_json, payment_method, timestamp, status, receipt_json FROM orders WHERE username = ? ORDER BY rowid DESC", (username,))
     rows = cursor.fetchall()
     conn.close()
     
@@ -322,7 +430,8 @@ async def get_orders(username: str, authorization: Optional[str] = Header(None))
             "shipping": json.loads(r[4]),
             "paymentMethod": r[5],
             "timestamp": r[6],
-            "status": r[7]
+            "status": r[7],
+            "receipt": json.loads(r[8]) if r[8] else None
         })
     return orders
 
@@ -332,12 +441,26 @@ async def create_order(order: OrderModel, authorization: Optional[str] = Header(
         raise HTTPException(status_code=401, detail="Authorization token required.")
     
     token = authorization.split(" ")[1]
-    verify_jwt_token(token)
+    user_payload = verify_jwt_token(token)
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    
+    if order.paymentMethod == 'cult_wallet':
+        cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (user_payload["username"],))
+        row = cursor.fetchone()
+        current_bal = row[0] if row and row[0] is not None else 0.0
+        order_total = float(order.total)
+        
+        if current_bal < order_total:
+            conn.close()
+            raise HTTPException(status_code=400, detail=f"Insufficient CULT Balance. You have {current_bal} CULT, but order total is {order_total} CULT.")
+            
+        new_balance = current_bal - order_total
+        cursor.execute("UPDATE users SET cult_balance = ? WHERE username = ?", (new_balance, user_payload["username"]))
+
     cursor.execute(
-        "INSERT INTO orders (id, username, items_json, total, shipping_json, payment_method, timestamp, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO orders (id, username, items_json, total, shipping_json, payment_method, timestamp, status, receipt_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             order.id,
             order.username,
@@ -346,7 +469,8 @@ async def create_order(order: OrderModel, authorization: Optional[str] = Header(
             json.dumps(order.shipping),
             order.paymentMethod,
             order.timestamp,
-            order.status
+            order.status,
+            json.dumps(order.receipt) if order.receipt else None
         )
     )
     conn.commit()
@@ -380,10 +504,10 @@ async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None
         while True:
             raw_data = await websocket.receive_text()
             if len(raw_data) > 4096:
-                continue # Payload size limit safety check
+                continue
             try:
                 msg_data = json.loads(raw_data)
-                msg_data["sender"] = user_payload["username"] # Override sender with token username
+                msg_data["sender"] = user_payload["username"]
                 await manager.broadcast(msg_data, "global")
             except json.JSONDecodeError:
                 pass
@@ -402,7 +526,6 @@ async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[st
         await websocket.close(code=4003)
         return
 
-    # Verify user is a legitimate participant in this private room ID
     if user_payload["username"] not in room_id.split("_"):
         await websocket.close(code=4003)
         return
@@ -422,10 +545,10 @@ async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[st
         while True:
             raw_data = await websocket.receive_text()
             if len(raw_data) > 4096:
-                continue # Payload size limit safety check
+                continue
             try:
                 msg_data = json.loads(raw_data)
-                msg_data["sender"] = user_payload["username"] # Ensure verified identity
+                msg_data["sender"] = user_payload["username"]
                 await manager.broadcast(msg_data, room_id)
             except json.JSONDecodeError:
                 pass
