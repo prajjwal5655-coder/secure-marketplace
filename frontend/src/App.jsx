@@ -1006,8 +1006,8 @@ export default function App() {
                   >
                     <QrCode className={`w-5 h-5 ${paymentMethod === 'qr_code' ? 'text-cyan-400' : 'text-slate-500'}`} />
                     <div>
-                      <div className="font-mono text-xs font-bold text-white">UPI / QR Scan</div>
-                      <div className="font-mono text-[10px] text-slate-500">Scan via phone app</div>
+                      <div className="font-mono text-xs font-bold text-white">UPI / Google Pay</div>
+                      <div className="font-mono text-[10px] text-slate-500">Prajjwal Maurya (UPI)</div>
                     </div>
                   </div>
 
@@ -1026,15 +1026,24 @@ export default function App() {
 
               {paymentMethod === 'qr_code' && (
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 text-center space-y-4">
-                  <span className="text-xs font-mono text-slate-400 uppercase tracking-widest block">Scan QR Code to Pay</span>
-                  <div className="w-48 h-48 bg-white p-3 mx-auto rounded-lg shadow-xl flex items-center justify-center">
+                  <div className="space-y-1">
+                    <span className="text-xs font-mono text-slate-400 uppercase tracking-widest block">Scan with any UPI / Google Pay App</span>
+                    <strong className="text-white font-mono text-sm block">Prajjwal Maurya</strong>
+                    <code className="text-cyan-400 font-mono text-xs block bg-black py-1 px-3 rounded inline-block border border-slate-800">prajjwal5655@okicici</code>
+                  </div>
+
+                  <div className="w-52 h-52 bg-white p-3 mx-auto rounded-xl shadow-2xl flex items-center justify-center border-2 border-cyan-500/50">
                     <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=upi://pay?pa=nexusmarket@upi%26pn=NexusMarket%26am=${cartTotal}%26cu=INR`} 
-                      alt="UPI QR Code"
-                      className="w-full h-full"
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=upi://pay?pa=prajjwal5655@okicici%26pn=Prajjwal%20Maurya%26am=${cartTotal}%26cu=INR`} 
+                      alt="Prajjwal Maurya UPI QR Code"
+                      className="w-full h-full object-contain"
                     />
                   </div>
-                  <p className="font-mono text-xs text-slate-400">Total Amount: <strong className="text-cyan-400">{cartTotal} ETH</strong></p>
+                  
+                  <div className="pt-2 border-t border-slate-900">
+                    <p className="font-mono text-xs text-slate-400">Total Amount to Pay: <strong className="text-emerald-400 font-bold text-sm">{cartTotal} ETH</strong></p>
+                    <p className="font-mono text-[10px] text-slate-600 mt-1">Scan using Google Pay, PhonePe, Paytm, or BHIM</p>
+                  </div>
                 </div>
               )}
 
