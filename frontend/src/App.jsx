@@ -79,8 +79,17 @@ async function decryptText(cipherBase64, roomId) {
 
 export default function App() {
   const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
-  const apiBaseUrl = `http://${host}:8000`;
-  const wsBaseUrl = `ws://${host}:8000`;
+  
+  // Auto-detect whether running on live cloud deployment (Vercel/Render) or local Wi-Fi
+  const isProduction = host.includes('vercel.app') || host.includes('onrender.com');
+
+  const apiBaseUrl = isProduction 
+    ? 'https://nexus-secure-backend.onrender.com' 
+    : `http://${host}:8000`;
+
+  const wsBaseUrl = isProduction 
+    ? 'wss://nexus-secure-backend.onrender.com' 
+    : `ws://${host}:8000`;
 
   const [db, setDb] = useState({
     globalMessages: [],
@@ -163,7 +172,7 @@ export default function App() {
     fetchMarketItems();
     const interval = setInterval(fetchMarketItems, 4000);
     return () => clearInterval(interval);
-  }, [host]);
+  }, [host, apiBaseUrl]);
 
   useEffect(() => {
     if (user && user.token) {
@@ -231,7 +240,7 @@ export default function App() {
     return () => {
       if (globalWsRef.current) globalWsRef.current.close();
     };
-  }, [user, host]);
+  }, [user, host, wsBaseUrl]);
 
   const getPrivateChatKey = (u1, u2) => [u1, u2].sort().join('_');
 
@@ -277,7 +286,7 @@ export default function App() {
     return () => {
       if (privateWsRef.current) privateWsRef.current.close();
     };
-  }, [user, activePrivateChat, activeView, host]);
+  }, [user, activePrivateChat, activeView, host, wsBaseUrl]);
 
   useEffect(() => {
     if (chatScrollRef.current) {
