@@ -83,11 +83,11 @@ export default function App() {
   const isProduction = host.includes('vercel.app') || host.includes('onrender.com');
 
   const apiBaseUrl = isProduction 
-    ? 'https://nexus-secure-backend.onrender.com' 
+    ? 'https://secure-marketplace.onrender.com' 
     : `http://${host}:8000`;
 
   const wsBaseUrl = isProduction 
-    ? 'wss://nexus-secure-backend.onrender.com' 
+    ? 'wss://secure-marketplace.onrender.com' 
     : `ws://${host}:8000`;
 
   const [db, setDb] = useState({
