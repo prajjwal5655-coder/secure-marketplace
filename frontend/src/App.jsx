@@ -113,7 +113,6 @@ export default function App() {
 
   const [audioVaultList, setAudioVaultList] = useState([]);
   const [newAudioForm, setNewAudioForm] = useState({ title: '', audioUrl: '', docUrl: '', category: 'Voice Story', desc: '' });
-  const [currentlyPlayingAudio, setCurrentlyPlayingAudio] = useState(null);
 
   const [proUtrInput, setProUtrInput] = useState('');
   const [proUtrError, setProUtrError] = useState('');
@@ -1604,9 +1603,9 @@ export default function App() {
         </div>
       </nav>
 
+      {}
       <main className="max-w-7xl mx-auto px-4 py-8">
         
-        {/* Marketplace View */}
         {activeView === 'marketplace' && (
             <div className="space-y-6">
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-slate-800 pb-4 gap-4">
@@ -1704,7 +1703,7 @@ export default function App() {
             </div>
         )}
 
-        {/* Groups Hub */}
+        {}
         {activeView === 'groups_hub' && (
           <div className="max-w-4xl mx-auto space-y-6 font-mono">
             <div className="flex justify-between items-center border-b border-slate-800 pb-4">
@@ -1750,7 +1749,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Studio Audio Vault & Voice Hub */}
+        {}
         {activeView === 'audio_vault' && (
           <div className="max-w-4xl mx-auto space-y-6 font-mono">
             <div className="border-b border-slate-800 pb-4">
@@ -1811,7 +1810,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Cart View */}
+        {}
         {activeView === 'cart' && (
           <div className="max-w-3xl mx-auto space-y-6">
             <button onClick={() => setActiveView('marketplace')} className="text-slate-500 hover:text-white font-mono text-xs flex items-center gap-2">
@@ -1866,7 +1865,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Shipping View */}
+        {}
         {activeView === 'checkout_address' && (
           <div className="max-w-2xl mx-auto space-y-6 font-mono">
             <button onClick={() => setActiveView('cart')} className="text-slate-500 hover:text-white text-xs flex items-center gap-2">
@@ -1919,7 +1918,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Payment View */}
+        {}
         {activeView === 'checkout_payment' && (
           <div className="max-w-2xl mx-auto space-y-6 font-mono">
             <button onClick={() => setActiveView('checkout_address')} className="text-slate-500 hover:text-white text-xs flex items-center gap-2">
@@ -2020,7 +2019,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Order Confirmed Receipt View */}
+        {}
         {activeView === 'order_confirmed' && lastOrder && lastReceipt && (
           <div className="max-w-2xl mx-auto space-y-6 font-mono">
             <div className="bg-black border border-slate-800 rounded-xl p-8 space-y-6 shadow-2xl relative overflow-hidden">
@@ -2096,7 +2095,7 @@ export default function App() {
           </div>
         )}
 
-        {/* My Orders */}
+        {}
         {activeView === 'my_orders' && (
           <div className="max-w-4xl mx-auto space-y-6 font-mono">
             <h2 className="text-2xl font-bold text-white uppercase tracking-wider flex items-center gap-2 border-b border-slate-800 pb-4">
@@ -2145,7 +2144,7 @@ export default function App() {
           </div>
         )}
 
-        {/* PRO Membership */}
+        {}
         {activeView === 'pro_upgrade' && (
           <div className="max-w-xl mx-auto space-y-6 font-mono text-center">
             <div className="bg-black border border-amber-500/40 rounded-xl p-8 space-y-6 shadow-2xl relative overflow-hidden">
@@ -2211,11 +2210,12 @@ export default function App() {
           </div>
         )}
 
+        {}
         {activeView === 'global_chat' && renderChatInterface('global')}
         {activeView === 'private_chat' && renderChatInterface('private')}
         {activeView === 'group_chat' && renderChatInterface('group')}
 
-        {/* Vendor Console */}
+        {}
         {activeView === 'dashboard' && user?.role === 'seller' && (
           <div className="space-y-8 font-mono">
             <div className="border-b border-slate-800 pb-4">

@@ -14,18 +14,18 @@ from typing import Dict, List, Optional
 
 app = FastAPI(title="Nexus Secure Marketplace, Group Comms & Audio Vault API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 DB_FILE = "marketplace.db"
 JWT_SECRET = "NEXUS_JWT_SUPER_SECRET_KEY_HOSTEL_2026_SECURITY_TOKEN"
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https://.*\.vercel\.app|http://localhost:.*|http://127\.0\.0\.1:.*|http://10\..*|https://secure-marketplace\.onrender\.com",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
 
@@ -61,7 +61,7 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # Users table
+    # 1. Users Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -75,7 +75,19 @@ def init_db():
         )
     ''')
     
-    # Items table
+    # Auto-migrate missing columns for existing users table
+    for col_name, col_def in [
+        ("cult_balance", "REAL DEFAULT 0.0"),
+        ("is_pro", "INTEGER DEFAULT 0"),
+        ("is_private", "INTEGER DEFAULT 0"),
+        ("avatar_url", "TEXT DEFAULT ''")
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}")
+        except Exception:
+            pass
+
+    # 2. Items Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,8 +101,18 @@ def init_db():
             category TEXT DEFAULT 'Hardware'
         )
     ''')
-    
-    # Messages table
+
+    # Auto-migrate missing columns for existing items table
+    for col_name, col_def in [
+        ("seller_email", "TEXT DEFAULT ''"),
+        ("category", "TEXT DEFAULT 'Hardware'")
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE items ADD COLUMN {col_name} {col_def}")
+        except Exception:
+            pass
+
+    # 3. Messages Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,8 +124,8 @@ def init_db():
             timestamp TEXT NOT NULL
         )
     ''')
-    
-    # Groups table
+
+    # 4. Groups Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS groups (
             id TEXT PRIMARY KEY,
@@ -114,7 +136,7 @@ def init_db():
         )
     ''')
 
-    # Group Invites table
+    # 5. Group Invites Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS group_invites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,7 +148,7 @@ def init_db():
         )
     ''')
 
-    # Audio & Media Vault table
+    # 6. Audio Vault Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS audio_vault (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,7 +162,7 @@ def init_db():
         )
     ''')
 
-    # Orders table
+    # 7. Orders Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY,
@@ -156,7 +178,7 @@ def init_db():
         )
     ''')
 
-    # UTR Transactions table
+    # 8. UTR Transactions Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS utr_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,7 +191,6 @@ def init_db():
         )
     ''')
     
-    # Seed default items if empty
     cursor.execute("SELECT COUNT(*) FROM items")
     if cursor.fetchone()[0] == 0:
         seed_items = [
@@ -181,7 +202,6 @@ def init_db():
         ]
         cursor.executemany("INSERT INTO items (title, price, currency, seller, seller_email, state, desc, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", seed_items)
 
-    # Seed Audio Vault if empty
     cursor.execute("SELECT COUNT(*) FROM audio_vault")
     if cursor.fetchone()[0] == 0:
         seed_audio = [
@@ -314,7 +334,7 @@ async def get_items():
             "price": r[2],
             "currency": r[3],
             "seller": r[4],
-            "seller_email": r[5] if len(r) > 5 else "",
+            "seller_email": r[5] if len(r) > 5 and r[5] else "",
             "state": r[6],
             "desc": r[7],
             "category": r[8] if len(r) > 8 and r[8] else "Hardware"
@@ -445,18 +465,16 @@ async def get_user_profile(username: str, authorization: Optional[str] = Header(
             "message": "This node is marked PRIVATE by the owner."
         }
 
-    # Fetch listed items
     cursor.execute("SELECT id, title, price, currency, state, desc, category FROM items WHERE seller = ?", (username,))
     listed_items = [{"id": r[0], "title": r[1], "price": r[2], "currency": r[3], "state": r[4], "desc": r[5], "category": r[6]} for r in cursor.fetchall()]
     
-    # Fetch orders
     cursor.execute("SELECT id, total, timestamp, status FROM orders WHERE username = ?", (username,))
     orders = [{"id": r[0], "total": r[1], "timestamp": r[2], "status": r[3]} for r in cursor.fetchall()]
     
     conn.close()
     return {
         "username": user_row[0],
-        "email": user_row[1] if is_owner else user_row[1],
+        "email": user_row[1],
         "role": user_row[2],
         "isPro": bool(user_row[3]),
         "isPrivate": is_private,
@@ -679,7 +697,6 @@ async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = He
         "receipt": topup_receipt
     }
 
-# Group Chat API Endpoints
 @app.post("/api/groups/create")
 async def create_group(req: CreateGroupRequest, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -739,7 +756,6 @@ async def invite_to_group(req: InviteGroupRequest, authorization: Optional[str] 
     
     token = authorization.split(" ")[1]
     user_payload = verify_jwt_token(token)
-    inviter = user_payload["username"]
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -759,7 +775,6 @@ async def invite_to_group(req: InviteGroupRequest, authorization: Optional[str] 
     conn.close()
     return {"status": "success", "groupId": req.group_id, "invitedUser": req.target_username}
 
-# Audio & Media Vault API
 @app.get("/api/audio-vault")
 async def get_audio_vault():
     conn = sqlite3.connect(DB_FILE)
@@ -914,7 +929,6 @@ async def create_order(order: OrderModel, authorization: Optional[str] = Header(
     conn.close()
     return {"status": "success", "order_id": order.id}
 
-# WebSocket Endpoints (Global, Private, Group)
 @app.websocket("/ws/chat/global")
 async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None)):
     if not token:
