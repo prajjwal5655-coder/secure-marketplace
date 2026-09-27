@@ -81,7 +81,7 @@ export default function App() {
   const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
   const isProduction = host.includes('vercel.app') || host.includes('onrender.com') || host.includes('netlify.app');
 
-  const defaultProdApi = 'https://nexus-secure-backend.onrender.com';
+  const defaultProdApi = 'https://nexus-secure-backend-68ki.onrender.com';
   const apiBaseUrl = (import.meta.env.VITE_API_URL || (isProduction ? defaultProdApi : `http://${host}:8000`)).replace(/\/+$/, '');
   
   const derivedWs = apiBaseUrl.startsWith('https://') 
