@@ -22,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_FILE = "marketplace.db"
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "marketplace.db")
 JWT_SECRET = "NEXUS_JWT_SUPER_SECRET_KEY_HOSTEL_2026_SECURITY_TOKEN"
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
@@ -556,4 +556,5 @@ async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[st
         manager.disconnect(websocket, room_id)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("secure_backend:app", host="0.0.0.0", port=port, reload=False)

@@ -79,16 +79,13 @@ async function decryptText(cipherBase64, roomId) {
 
 export default function App() {
   const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
-  
-  const isProduction = host.includes('vercel.app') || host.includes('onrender.com');
+  const isProduction = host.includes('vercel.app') || host.includes('onrender.com') || host.includes('netlify.app');
 
-  const apiBaseUrl = isProduction 
-    ? 'https://nexus-secure-backend.onrender.com' 
-    : `http://${host}:8000`;
+  const defaultProdApi = 'https://nexus-secure-backend.onrender.com';
+  const defaultProdWs = 'wss://nexus-secure-backend.onrender.com';
 
-  const wsBaseUrl = isProduction 
-    ? 'wss://nexus-secure-backend.onrender.com' 
-    : `ws://${host}:8000`;
+  const apiBaseUrl = (import.meta.env.VITE_API_URL || (isProduction ? defaultProdApi : `http://${host}:8000`)).replace(/\/+$/, '');
+  const wsBaseUrl = (import.meta.env.VITE_WS_URL || (isProduction ? defaultProdWs : `ws://${host}:8000`)).replace(/\/+$/, '');
 
   const [db, setDb] = useState({
     globalMessages: [],
