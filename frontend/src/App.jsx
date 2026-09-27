@@ -82,10 +82,13 @@ export default function App() {
   const isProduction = host.includes('vercel.app') || host.includes('onrender.com') || host.includes('netlify.app');
 
   const defaultProdApi = 'https://nexus-secure-backend.onrender.com';
-  const defaultProdWs = 'wss://nexus-secure-backend.onrender.com';
-
   const apiBaseUrl = (import.meta.env.VITE_API_URL || (isProduction ? defaultProdApi : `http://${host}:8000`)).replace(/\/+$/, '');
-  const wsBaseUrl = (import.meta.env.VITE_WS_URL || (isProduction ? defaultProdWs : `ws://${host}:8000`)).replace(/\/+$/, '');
+  
+  const derivedWs = apiBaseUrl.startsWith('https://') 
+    ? apiBaseUrl.replace(/^https:\/\//, 'wss://') 
+    : apiBaseUrl.replace(/^http:\/\//, 'ws://');
+
+  const wsBaseUrl = (import.meta.env.VITE_WS_URL || derivedWs).replace(/\/+$/, '');
 
   const [db, setDb] = useState({
     globalMessages: [],
