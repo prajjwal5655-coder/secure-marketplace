@@ -1039,6 +1039,12 @@ async def toggle_group_stream(group_id: str, req: GroupStreamToggleModel, author
         "streamTitle": stream_title
     }
 
+@app.get("/api/groups/{group_id}/viewers")
+async def get_group_viewers(group_id: str):
+    room_id = f"group_{group_id}"
+    viewers = len(manager.active_connections.get(room_id, []))
+    return {"group_id": group_id, "viewers": viewers}
+
 # ==================== WEBSOCKETS ====================
 
 @app.websocket("/ws/chat/global")
@@ -1092,6 +1098,15 @@ async def group_chat_ws(websocket: WebSocket, group_id: str, token: Optional[str
 
     room_id = f"group_{group_id}"
     await manager.connect(websocket, room_id)
+    
+    # Broadcast genuine real-time live viewer count on connect
+    viewer_count = len(manager.active_connections.get(room_id, []))
+    await manager.broadcast_raw(json.dumps({
+        "type": "VIEWER_COUNT_UPDATE", 
+        "count": viewer_count,
+        "group_id": group_id
+    }), room_id)
+
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1105,14 +1120,14 @@ async def group_chat_ws(websocket: WebSocket, group_id: str, token: Optional[str
             
         while True:
             raw_data = await websocket.receive_text()
-            if len(raw_data) > 65536:
+            if len(raw_data) > 1048576: # 1MB max for high-res frames / WebRTC signals
                 continue
             try:
                 msg_data = json.loads(raw_data)
                 msg_type = msg_data.get("type", "chat")
                 
-                # If it's signaling/stream data, broadcast directly
-                if msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE", "STREAM_FRAME"]:
+                # If it's signaling/stream data or frame broadcast, forward raw
+                if msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE", "STREAM_FRAME", "VIEWER_PING"]:
                     msg_data["sender"] = user_payload["username"]
                     await manager.broadcast_raw(json.dumps(msg_data), room_id)
                 else:
@@ -1121,7 +1136,16 @@ async def group_chat_ws(websocket: WebSocket, group_id: str, token: Optional[str
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
+        pass
+    finally:
         manager.disconnect(websocket, room_id)
+        # Broadcast genuine real-time live viewer count on disconnect
+        viewer_count = len(manager.active_connections.get(room_id, []))
+        await manager.broadcast_raw(json.dumps({
+            "type": "VIEWER_COUNT_UPDATE", 
+            "count": viewer_count,
+            "group_id": group_id
+        }), room_id)
 
 @app.websocket("/ws/chat/private/{room_id}")
 async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[str] = Query(None)):

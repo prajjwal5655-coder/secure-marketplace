@@ -88,7 +88,13 @@ def test_groups_and_streaming():
     assert matched["isLive"] is True
     print("Live stream confirmed in public groups directory:", matched["streamTitle"])
 
-    print("\n--- 5. Testing Ending Live Video Stream ---")
+    print("\n--- 5. Testing Group Viewers Count Endpoint ---")
+    viewers_res = get_json(f"{BASE_URL}/api/groups/{group_id}/viewers")
+    print("Group viewers endpoint returned:", viewers_res)
+    assert "viewers" in viewers_res
+    assert isinstance(viewers_res["viewers"], int)
+
+    print("\n--- 6. Testing Ending Live Video Stream ---")
     stream_off = patch_json(f"{BASE_URL}/api/groups/{group_id}/stream", {
         "is_live": False,
         "stream_title": ""
@@ -96,7 +102,7 @@ def test_groups_and_streaming():
     print("Host ended stream:", stream_off)
     assert stream_off["isLive"] is False
 
-    print("\n=== ALL GROUP & LIVE STREAMING INTEGRATION TESTS PASSED! ===")
+    print("\n=== ALL GROUP, STREAMING & REAL VIEWER INTEGRATION TESTS PASSED! ===")
 
 if __name__ == "__main__":
     test_groups_and_streaming()

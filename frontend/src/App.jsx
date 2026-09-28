@@ -133,11 +133,13 @@ export default function App() {
   const [createGroupModal, setCreateGroupModal] = useState(false);
   const [newGroupForm, setNewGroupForm] = useState({ name: '', topic: '' });
   const [streamModal, setStreamModal] = useState(false);
-  const [streamForm, setStreamForm] = useState({ title: 'Live Dark Web Broadcast', source: 'matrix' }); // 'webcam' | 'screen' | 'matrix'
+  const [streamForm, setStreamForm] = useState({ title: 'Live Dark Web Broadcast', source: 'webcam' }); // 'webcam' | 'screen' | 'matrix'
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamMuted, setStreamMuted] = useState(false);
   const [streamVolume, setStreamVolume] = useState(true);
-  const [viewerCount, setViewerCount] = useState(24);
+  const [viewerCount, setViewerCount] = useState(0);
+  const [remoteStreamFrame, setRemoteStreamFrame] = useState(null);
+  const [remoteStreamSource, setRemoteStreamSource] = useState(null);
 
   const [wsConnected, setWsConnected] = useState(false);
   const [cart, setCart] = useState([]);
@@ -166,6 +168,7 @@ export default function App() {
   const videoStreamRef = useRef(null);
   const matrixCanvasRef = useRef(null);
   const mediaStreamTrackRef = useRef(null);
+  const frameIntervalRef = useRef(null);
 
   const [items, setItems] = useState([]);
   const [newProduct, setNewProduct] = useState({ title: '', price: '', desc: '' });
@@ -434,8 +437,18 @@ export default function App() {
             // Live Stream status change broadcast event
             if (data.type === 'STREAM_STATUS_CHANGE') {
               setSelectedGroup(prev => prev ? { ...prev, isLive: data.isLive, streamTitle: data.streamTitle } : prev);
+              if (!data.isLive) {
+                setRemoteStreamFrame(null);
+              }
               fetchGroups();
               showToast(data.text);
+            } else if (data.type === 'STREAM_FRAME') {
+              // Remote stream frame from broadcaster
+              setRemoteStreamFrame(data.frame);
+              setRemoteStreamSource(data.source);
+            } else if (data.type === 'VIEWER_COUNT_UPDATE') {
+              // Real-time live viewer count (0 if 0, 22 if 22)
+              setViewerCount(typeof data.count === 'number' ? data.count : 0);
             }
 
             setDb(prev => {
@@ -470,6 +483,81 @@ export default function App() {
       if (groupWsRef.current) groupWsRef.current.close();
     };
   }, [user, selectedGroup?.id, activeView, host, wsBaseUrl]);
+
+  // Fetch genuine real-time live viewer count for selected group
+  useEffect(() => {
+    if (!selectedGroup || activeView !== 'group_dark') return;
+
+    const fetchGroupViewers = async () => {
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/groups/${selectedGroup.id}/viewers`);
+        if (res.ok) {
+          const vdata = await res.json();
+          setViewerCount(typeof vdata.viewers === 'number' ? vdata.viewers : 0);
+        }
+      } catch (e) {
+        console.warn("Could not fetch group viewers:", e);
+      }
+    };
+
+    fetchGroupViewers();
+    const interval = setInterval(fetchGroupViewers, 3000);
+    return () => clearInterval(interval);
+  }, [selectedGroup?.id, activeView, apiBaseUrl]);
+
+  // Attach MediaStream to local <video> element (Fixes Black Screen for Webcam & Screen Share)
+  useEffect(() => {
+    if (isStreaming && (streamForm.source === 'webcam' || streamForm.source === 'screen')) {
+      if (videoStreamRef.current && mediaStreamTrackRef.current) {
+        videoStreamRef.current.srcObject = mediaStreamTrackRef.current;
+        videoStreamRef.current.play().catch(e => console.warn("Local video stream play notice:", e));
+      }
+    }
+  }, [isStreaming, streamForm.source, selectedGroup?.id]);
+
+  // Broadcaster frame capturing and WebSocket streaming to group members
+  useEffect(() => {
+    if (isStreaming && (streamForm.source === 'webcam' || streamForm.source === 'screen')) {
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = 640;
+      offCanvas.height = 360;
+      const ctx = offCanvas.getContext('2d');
+
+      frameIntervalRef.current = setInterval(() => {
+        try {
+          if (
+            videoStreamRef.current &&
+            videoStreamRef.current.readyState >= 2 &&
+            videoStreamRef.current.videoWidth > 0 &&
+            groupWsRef.current &&
+            groupWsRef.current.readyState === WebSocket.OPEN
+          ) {
+            ctx.drawImage(videoStreamRef.current, 0, 0, 640, 360);
+            const frameData = offCanvas.toDataURL('image/jpeg', 0.55);
+            groupWsRef.current.send(JSON.stringify({
+              type: 'STREAM_FRAME',
+              frame: frameData,
+              source: streamForm.source
+            }));
+          }
+        } catch (err) {
+          // Silent frame catch
+        }
+      }, 120);
+
+      return () => {
+        if (frameIntervalRef.current) {
+          clearInterval(frameIntervalRef.current);
+          frameIntervalRef.current = null;
+        }
+      };
+    } else {
+      if (frameIntervalRef.current) {
+        clearInterval(frameIntervalRef.current);
+        frameIntervalRef.current = null;
+      }
+    }
+  }, [isStreaming, streamForm.source, selectedGroup?.id]);
 
   useEffect(() => {
     if (chatScrollRef.current) {
@@ -788,28 +876,47 @@ export default function App() {
   const startLiveStream = async () => {
     if (!user || !selectedGroup) return;
 
+    let stream = null;
     try {
       if (streamForm.source === 'webcam') {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-          mediaStreamTrackRef.current = stream;
-          if (videoStreamRef.current) {
-            videoStreamRef.current.srcObject = stream;
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+            audio: true
+          });
+        } catch (camAudioErr) {
+          console.warn("Retrying video-only webcam:", camAudioErr);
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+              audio: false
+            });
+          } catch (camErr) {
+            console.warn("Webcam access failed:", camErr);
+            showToast("Webcam permission denied or camera not found. Using Cyber Matrix feed.");
+            setStreamForm(prev => ({ ...prev, source: 'matrix' }));
           }
-        } catch (camErr) {
-          console.warn("Webcam access unavailable, falling back to Cyber Matrix stream feed:", camErr);
-          setStreamForm(prev => ({ ...prev, source: 'matrix' }));
         }
       } else if (streamForm.source === 'screen') {
         try {
-          const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-          mediaStreamTrackRef.current = stream;
-          if (videoStreamRef.current) {
-            videoStreamRef.current.srcObject = stream;
-          }
+          stream = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: 'always' },
+            audio: false
+          });
         } catch (scrErr) {
-          console.warn("Screen share unavailable, falling back to Cyber Matrix stream feed:", scrErr);
+          console.warn("Screen share failed:", scrErr);
+          showToast("Screen share cancelled. Using Cyber Matrix feed.");
           setStreamForm(prev => ({ ...prev, source: 'matrix' }));
+        }
+      }
+
+      if (stream) {
+        mediaStreamTrackRef.current = stream;
+        const vTrack = stream.getVideoTracks()[0];
+        if (vTrack) {
+          vTrack.onended = () => {
+            stopLiveStream();
+          };
         }
       }
 
@@ -827,14 +934,30 @@ export default function App() {
         setSelectedGroup(prev => ({ ...prev, isLive: true, streamTitle: streamForm.title }));
         setStreamModal(false);
         showToast(`🔴 YOU ARE LIVE: "${streamForm.title}"!`);
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Failed to start live stream.");
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+          mediaStreamTrackRef.current = null;
+        }
       }
     } catch (err) {
       showToast("Failed to initiate live stream.");
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        mediaStreamTrackRef.current = null;
+      }
     }
   };
 
   const stopLiveStream = async () => {
     if (!user || !selectedGroup) return;
+
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current);
+      frameIntervalRef.current = null;
+    }
 
     if (mediaStreamTrackRef.current) {
       mediaStreamTrackRef.current.getTracks().forEach(track => track.stop());
@@ -843,6 +966,9 @@ export default function App() {
     if (videoStreamRef.current) {
       videoStreamRef.current.srcObject = null;
     }
+
+    setRemoteStreamFrame(null);
+    setIsStreaming(false);
 
     try {
       await fetch(`${apiBaseUrl}/api/groups/${selectedGroup.id}/stream`, {
@@ -855,7 +981,6 @@ export default function App() {
       });
     } catch (e) {}
 
-    setIsStreaming(false);
     setSelectedGroup(prev => ({ ...prev, isLive: false, streamTitle: '' }));
     showToast("⏹️ Live stream ended. Group chat remains active 24/7.");
   };
@@ -1923,15 +2048,34 @@ export default function App() {
                   
                   {selectedGroup.isLive ? (
                     <div className="w-full h-full relative bg-black flex items-center justify-center">
-                      {/* Video element for webcam / screen or canvas for Cyber Matrix Feed */}
-                      {streamForm.source === 'matrix' || !isStreaming ? (
-                        <canvas ref={matrixCanvasRef} className="w-full h-full object-cover"></canvas>
+                      {/* If I am the active host/broadcaster streaming webcam or screen */}
+                      {isStreaming && (streamForm.source === 'webcam' || streamForm.source === 'screen') ? (
+                        <video 
+                          ref={videoStreamRef} 
+                          autoPlay 
+                          playsInline 
+                          muted={true}
+                          onLoadedMetadata={() => {
+                            if (videoStreamRef.current) {
+                              videoStreamRef.current.play().catch(e => console.warn("Video play:", e));
+                            }
+                          }}
+                          className="w-full h-full object-contain bg-black"
+                        />
+                      ) : !isStreaming && remoteStreamFrame ? (
+                        /* If I am a syndicate viewer and receiving live video frames from host */
+                        <img 
+                          src={remoteStreamFrame} 
+                          alt="Live Broadcast Feed" 
+                          className="w-full h-full object-contain bg-black"
+                        />
                       ) : (
-                        <video ref={videoStreamRef} autoPlay playsInline muted={streamMuted} className="w-full h-full object-cover"></video>
+                        /* Cyber Matrix stream feed */
+                        <canvas ref={matrixCanvasRef} className="w-full h-full object-cover"></canvas>
                       )}
 
                       {/* Stream HUD Badges */}
-                      <div className="absolute top-3 left-3 flex items-center gap-2">
+                      <div className="absolute top-3 left-3 flex items-center gap-2 pointer-events-none">
                         <span className="bg-rose-600 text-white font-bold text-[10px] px-2.5 py-1 rounded flex items-center gap-1 shadow-lg">
                           <Radio className="w-3 h-3" /> LIVE
                         </span>
@@ -1940,9 +2084,9 @@ export default function App() {
                         </span>
                       </div>
 
-                      <div className="absolute top-3 right-3 flex items-center gap-2">
+                      <div className="absolute top-3 right-3 flex items-center gap-2 pointer-events-none">
                         <span className="bg-black/80 backdrop-blur-sm text-slate-300 text-[10px] px-2.5 py-1 rounded border border-slate-800 flex items-center gap-1">
-                          <Users className="w-3 h-3 text-emerald-400" /> {viewerCount} Viewers
+                          <Users className="w-3 h-3 text-emerald-400" /> {viewerCount} {viewerCount === 1 ? 'Viewer' : 'Viewers'}
                         </span>
                       </div>
 
@@ -1951,9 +2095,18 @@ export default function App() {
                         <div className="flex items-center gap-2">
                           <span className="text-[10px] text-slate-400 font-mono">
                             Broadcaster: <strong className="text-cyan-400">@{selectedGroup.creator}</strong>
+                            {isStreaming && <span className="ml-1 text-emerald-400 font-bold">(You are broadcasting)</span>}
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
+                          {isStreaming && (
+                            <button 
+                              onClick={stopLiveStream}
+                              className="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded text-[10px] font-bold flex items-center gap-1"
+                            >
+                              <StopCircle className="w-3 h-3" /> End Broadcast
+                            </button>
+                          )}
                           <button 
                             onClick={() => setStreamMuted(!streamMuted)} 
                             className="p-1.5 text-slate-400 hover:text-white bg-black/60 rounded border border-slate-800"
