@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
-app = FastAPI(title="Nexus Secure Marketplace & CULT Relay API")
+app = FastAPI(title="Nexus Secure Dark Marketplace & Syndicate Relay API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -143,6 +143,21 @@ def init_db():
         )
     ''')
 
+    # Dark Syndicates / Groups table with live streaming metadata
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS dark_groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            creator TEXT NOT NULL,
+            members_json TEXT NOT NULL,
+            is_live INTEGER DEFAULT 0,
+            stream_title TEXT DEFAULT '',
+            stream_started_at TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    ''')
+
     # Safe column migrations for existing SQLite databases
     def ensure_column(table_name, col_name, col_def):
         cursor.execute(f"PRAGMA table_info({table_name})")
@@ -155,6 +170,9 @@ def init_db():
     ensure_column("items", "currency", "TEXT DEFAULT 'CULT'")
     ensure_column("orders", "receipt_json", "TEXT")
     ensure_column("orders", "payment_method", "TEXT DEFAULT 'cult_wallet'")
+    ensure_column("dark_groups", "is_live", "INTEGER DEFAULT 0")
+    ensure_column("dark_groups", "stream_title", "TEXT DEFAULT ''")
+    ensure_column("dark_groups", "stream_started_at", "TEXT DEFAULT ''")
     
     # Seed default marketplace items if database is empty
     cursor.execute("SELECT COUNT(*) FROM items")
@@ -165,6 +183,16 @@ def init_db():
             ("Hardware Crypto Cold Wallet", "25", "CULT", "CryptoVault", "Available", "Tamper-proof physical hardware wallet for offline private key storage.")
         ]
         cursor.executemany("INSERT INTO items (title, price, currency, seller, state, desc) VALUES (?, ?, ?, ?, ?, ?)", seed_items)
+
+    # Seed default Dark Syndicates / Groups if empty
+    cursor.execute("SELECT COUNT(*) FROM dark_groups")
+    if cursor.fetchone()[0] == 0:
+        seed_groups = [
+            ("grp-01", "CYBER UNDERGROUND RELAY", "0-Day Exploits, Encrypted Relays & Hardware Deals", "SecureTech", json.dumps(["SecureTech", "CryptoVault", "NetNinja"]), 0, "", "", "2026-09-28 20:00:00"),
+            ("grp-02", "HOSTEL LIVE STREAM & LOUNGE", "Live Coding, Security Audits, Gaming & P2P Stream", "NetNinja", json.dumps(["NetNinja", "SecureTech", "CryptoVault"]), 0, "", "", "2026-09-28 20:30:00"),
+            ("grp-03", "DARK COLD STORAGE SYNDICATE", "P2P Escrow, CULT Coins Arbitrage & Key Exchange", "CryptoVault", json.dumps(["CryptoVault"]), 0, "", "", "2026-09-28 21:00:00")
+        ]
+        cursor.executemany("INSERT INTO dark_groups (id, name, topic, creator, members_json, is_live, stream_title, stream_started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", seed_groups)
         
     conn.commit()
     conn.close()
@@ -209,6 +237,14 @@ class OrderModel(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: str
 
+class GroupCreateModel(BaseModel):
+    name: str
+    topic: str
+
+class GroupStreamToggleModel(BaseModel):
+    is_live: bool
+    stream_title: Optional[str] = ""
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
@@ -242,6 +278,14 @@ class ConnectionManager:
                 except Exception:
                     pass
 
+    async def broadcast_raw(self, message_str: str, room_id: str):
+        if room_id in self.active_connections:
+            for connection in self.active_connections[room_id]:
+                try:
+                    await connection.send_text(message_str)
+                except Exception:
+                    pass
+
 manager = ConnectionManager()
 
 def get_private_room_key(u1: str, u2: str) -> str:
@@ -249,7 +293,7 @@ def get_private_room_key(u1: str, u2: str) -> str:
 
 @app.get("/")
 async def root():
-    return {"status": "online", "system": "Nexus Secure Marketplace & CULT Relay API"}
+    return {"status": "online", "system": "Nexus Secure Dark Marketplace & Syndicate Relay API"}
 
 @app.get("/api/items")
 async def get_items():
@@ -640,7 +684,6 @@ async def create_order(order: OrderModel, authorization: Optional[str] = Header(
     conn = get_db()
     cursor = conn.cursor()
     
-    # Check out-of-stock items in cart
     for item in order.items:
         if "id" in item:
             cursor.execute("SELECT state FROM items WHERE id = ?", (item["id"],))
@@ -683,7 +726,6 @@ async def create_order(order: OrderModel, authorization: Optional[str] = Header(
         )
     )
 
-    # Collect distinct sellers and create order notifications & messages
     sellers = set()
     for itm in order.items:
         s = itm.get("seller")
@@ -781,6 +823,224 @@ async def get_user_notifications(username: str, authorization: Optional[str] = H
         })
     return notifs
 
+# ==================== DARK SYNDICATES & LIVE STREAMING APIS ====================
+
+@app.get("/api/groups")
+async def get_groups():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, topic, creator, members_json, is_live, stream_title, stream_started_at, created_at FROM dark_groups ORDER BY is_live DESC, rowid DESC")
+    rows = cursor.fetchall()
+    conn.close()
+
+    groups = []
+    for r in rows:
+        try:
+            members = json.loads(r[4])
+        except Exception:
+            members = [r[3]]
+        
+        groups.append({
+            "id": r[0],
+            "name": r[1],
+            "topic": r[2],
+            "creator": r[3],
+            "members": members,
+            "isLive": bool(r[5]),
+            "streamTitle": r[6],
+            "streamStartedAt": r[7],
+            "createdAt": r[8]
+        })
+    return groups
+
+@app.post("/api/groups")
+async def create_group(req: GroupCreateModel, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    creator = user_payload["username"]
+
+    if not req.name.strip() or not req.topic.strip():
+        raise HTTPException(status_code=400, detail="Syndicate Name and Protocol Topic are required.")
+
+    group_id = f"grp-{int(time.time() * 1000) % 10000000}"
+    timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    members_list = [creator]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO dark_groups (id, name, topic, creator, members_json, is_live, stream_title, stream_started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (group_id, req.name.strip(), req.topic.strip(), creator, json.dumps(members_list), 0, "", "", timestamp_now)
+    )
+    
+    # System welcome message in group room
+    welcome_msg = f"🔒 Syndicate [{req.name}] established by @{creator}. Encrypted 24/7 channel open. Ready for comms and live streams."
+    cursor.execute(
+        "INSERT INTO messages (room_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+        (f"group_{group_id}", "SYSTEM_SYNDICATE_BOT", welcome_msg, timestamp_now)
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "success",
+        "group": {
+            "id": group_id,
+            "name": req.name.strip(),
+            "topic": req.topic.strip(),
+            "creator": creator,
+            "members": members_list,
+            "isLive": False,
+            "streamTitle": "",
+            "createdAt": timestamp_now
+        }
+    }
+
+@app.post("/api/groups/{group_id}/join")
+async def join_group(group_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    username = user_payload["username"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT members_json, name FROM dark_groups WHERE id = ?", (group_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Syndicate group not found.")
+
+    try:
+        members = json.loads(row[0])
+    except Exception:
+        members = []
+
+    if username not in members:
+        members.append(username)
+        cursor.execute("UPDATE dark_groups SET members_json = ? WHERE id = ?", (json.dumps(members), group_id))
+        
+        # System join announcement
+        timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        join_msg = f"📡 Operative @{username} joined the syndicate."
+        cursor.execute(
+            "INSERT INTO messages (room_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+            (f"group_{group_id}", "SYSTEM_SYNDICATE_BOT", join_msg, timestamp_now)
+        )
+        conn.commit()
+
+        # Broadcast join message
+        msg_obj = {"id": int(time.time()*1000), "sender": "SYSTEM_SYNDICATE_BOT", "text": join_msg, "timestamp": timestamp_now}
+        await manager.broadcast_raw(json.dumps(msg_obj), f"group_{group_id}")
+
+    conn.close()
+    return {"status": "success", "group_id": group_id, "members": members}
+
+@app.post("/api/groups/{group_id}/leave")
+async def leave_group(group_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    username = user_payload["username"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT creator, members_json FROM dark_groups WHERE id = ?", (group_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Syndicate group not found.")
+
+    creator = row[0]
+    try:
+        members = json.loads(row[1])
+    except Exception:
+        members = []
+
+    if username in members:
+        members.remove(username)
+        cursor.execute("UPDATE dark_groups SET members_json = ? WHERE id = ?", (json.dumps(members), group_id))
+        conn.commit()
+
+    conn.close()
+    return {"status": "success", "group_id": group_id, "members": members}
+
+@app.patch("/api/groups/{group_id}/stream")
+async def toggle_group_stream(group_id: str, req: GroupStreamToggleModel, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    username = user_payload["username"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT creator, name FROM dark_groups WHERE id = ?", (group_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Syndicate not found.")
+
+    creator, group_name = row[0], row[1]
+    if creator != username and user_payload.get("role") != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Unauthorized: Only syndicate creator / admin can start live streaming.")
+
+    timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    is_live_int = 1 if req.is_live else 0
+    stream_title = req.stream_title or (f"Live Relay by @{username}" if req.is_live else "")
+    started_at = timestamp_now if req.is_live else ""
+
+    cursor.execute(
+        "UPDATE dark_groups SET is_live = ?, stream_title = ?, stream_started_at = ? WHERE id = ?",
+        (is_live_int, stream_title, started_at, group_id)
+    )
+
+    alert_text = (
+        f"🔴 [LIVE STREAM BROADCAST STARTED] Host @{username} is now streaming live: \"{stream_title}\"!"
+        if req.is_live else
+        f"⏹️ [STREAM ENDED] Host @{username} ended the live broadcast. Chat remains active 24/7."
+    )
+
+    cursor.execute(
+        "INSERT INTO messages (room_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+        (f"group_{group_id}", "SYSTEM_SYNDICATE_BOT", alert_text, timestamp_now)
+    )
+    conn.commit()
+    conn.close()
+
+    # Broadcast event to group WebSocket
+    stream_event = {
+        "id": int(time.time() * 1000),
+        "sender": "SYSTEM_SYNDICATE_BOT",
+        "text": alert_text,
+        "type": "STREAM_STATUS_CHANGE",
+        "isLive": req.is_live,
+        "streamTitle": stream_title,
+        "timestamp": timestamp_now
+    }
+    await manager.broadcast_raw(json.dumps(stream_event), f"group_{group_id}")
+
+    return {
+        "status": "success",
+        "group_id": group_id,
+        "isLive": req.is_live,
+        "streamTitle": stream_title
+    }
+
+# ==================== WEBSOCKETS ====================
+
 @app.websocket("/ws/chat/global")
 async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None)):
     if not token:
@@ -807,7 +1067,7 @@ async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None
             
         while True:
             raw_data = await websocket.receive_text()
-            if len(raw_data) > 4096:
+            if len(raw_data) > 65536:
                 continue
             try:
                 msg_data = json.loads(raw_data)
@@ -817,6 +1077,51 @@ async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None
                 pass
     except WebSocketDisconnect:
         manager.disconnect(websocket, "global")
+
+@app.websocket("/ws/chat/group/{group_id}")
+async def group_chat_ws(websocket: WebSocket, group_id: str, token: Optional[str] = Query(None)):
+    if not token:
+        await websocket.close(code=4001)
+        return
+    
+    try:
+        user_payload = verify_jwt_token(token)
+    except Exception:
+        await websocket.close(code=4003)
+        return
+
+    room_id = f"group_{group_id}"
+    await manager.connect(websocket, room_id)
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, sender, text, timestamp FROM messages WHERE room_id = ? ORDER BY id ASC LIMIT 60", (room_id,))
+        history = cursor.fetchall()
+        conn.close()
+        
+        for msg in history:
+            msg_obj = {"id": msg[0], "sender": msg[1], "text": msg[2], "timestamp": msg[3]}
+            await websocket.send_text(json.dumps(msg_obj))
+            
+        while True:
+            raw_data = await websocket.receive_text()
+            if len(raw_data) > 65536:
+                continue
+            try:
+                msg_data = json.loads(raw_data)
+                msg_type = msg_data.get("type", "chat")
+                
+                # If it's signaling/stream data, broadcast directly
+                if msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE", "STREAM_FRAME"]:
+                    msg_data["sender"] = user_payload["username"]
+                    await manager.broadcast_raw(json.dumps(msg_data), room_id)
+                else:
+                    msg_data["sender"] = user_payload["username"]
+                    await manager.broadcast(msg_data, room_id)
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, room_id)
 
 @app.websocket("/ws/chat/private/{room_id}")
 async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[str] = Query(None)):
@@ -849,7 +1154,7 @@ async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[st
             
         while True:
             raw_data = await websocket.receive_text()
-            if len(raw_data) > 4096:
+            if len(raw_data) > 65536:
                 continue
             try:
                 msg_data = json.loads(raw_data)
