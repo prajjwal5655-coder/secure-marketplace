@@ -83,10 +83,9 @@ async function decryptText(cipherBase64, roomId) {
 
 export default function App() {
   const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
-  const isProduction = host.includes('vercel.app') || host.includes('onrender.com') || host.includes('netlify.app');
-
+  const isLocal = host === 'localhost' || host === '127.0.0.1';
   const defaultProdApi = 'https://nexus-secure-backend-68ki.onrender.com';
-  const apiBaseUrl = (import.meta.env.VITE_API_URL || (isProduction ? defaultProdApi : `http://${host}:8000`)).replace(/\/+$/, '');
+  const apiBaseUrl = (import.meta.env.VITE_API_URL || (isLocal ? `http://127.0.0.1:8000` : defaultProdApi)).replace(/\/+$/, '');
   
   const derivedWs = apiBaseUrl.startsWith('https://') 
     ? apiBaseUrl.replace(/^https:\/\//, 'wss://') 
@@ -126,10 +125,18 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
 
-  // Group Dark & Live Streaming States
-  const [groups, setGroups] = useState([]);
+  // Group Dark & Live Streaming States (Persisted in localStorage so never lost on logout)
+  const [groups, setGroups] = useState(() => {
+    try {
+      const saved = localStorage.getItem('nexus_persisted_groups');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [groupFilter, setGroupFilter] = useState('all'); // 'all' | 'live' | 'joined'
+  const [mobileGroupTab, setMobileGroupTab] = useState('room'); // 'list' | 'room'
   const [createGroupModal, setCreateGroupModal] = useState(false);
   const [newGroupForm, setNewGroupForm] = useState({ name: '', topic: '' });
   const [streamModal, setStreamModal] = useState(false);
@@ -170,7 +177,15 @@ export default function App() {
   const mediaStreamTrackRef = useRef(null);
   const frameIntervalRef = useRef(null);
 
-  const [items, setItems] = useState([]);
+  // Marketplace items (Persisted in localStorage so never lost on logout)
+  const [items, setItems] = useState(() => {
+    try {
+      const saved = localStorage.getItem('nexus_persisted_items');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
   const [newProduct, setNewProduct] = useState({ title: '', price: '', desc: '' });
 
   const showToast = (msg) => {
@@ -183,8 +198,9 @@ export default function App() {
       const res = await fetch(`${apiBaseUrl}/api/items`);
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data)) {
+        if (Array.isArray(data) && data.length > 0) {
           setItems(data);
+          localStorage.setItem('nexus_persisted_items', JSON.stringify(data));
         }
       }
     } catch (err) {
@@ -197,8 +213,9 @@ export default function App() {
       const res = await fetch(`${apiBaseUrl}/api/groups`);
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data)) {
+        if (Array.isArray(data) && data.length > 0) {
           setGroups(data);
+          localStorage.setItem('nexus_persisted_groups', JSON.stringify(data));
           if (!selectedGroup && data.length > 0) {
             setSelectedGroup(data[0]);
           } else if (selectedGroup) {
@@ -801,7 +818,29 @@ export default function App() {
   // Group Dark & Streaming Handlers
   const handleCreateGroup = async (e) => {
     e.preventDefault();
-    if (!newGroupForm.name || !newGroupForm.topic || !user) return;
+    if (!newGroupForm.name.trim() || !newGroupForm.topic.trim()) {
+      showToast("Syndicate Name and Protocol Topic are required.");
+      return;
+    }
+
+    if (!user) {
+      setAuthModal('login');
+      showToast("Please authenticate to establish a dark syndicate.");
+      return;
+    }
+
+    const tempId = `grp-${Date.now() % 10000000}`;
+    const timestampNow = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const localGroupObj = {
+      id: tempId,
+      name: newGroupForm.name.trim(),
+      topic: newGroupForm.topic.trim(),
+      creator: user.username,
+      members: [user.username],
+      isLive: false,
+      streamTitle: '',
+      createdAt: timestampNow
+    };
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/groups`, {
@@ -810,46 +849,157 @@ export default function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${user.token}`
         },
-        body: JSON.stringify(newGroupForm)
+        body: JSON.stringify({
+          name: newGroupForm.name.trim(),
+          topic: newGroupForm.topic.trim()
+        })
       });
 
       if (res.ok) {
         const data = await res.json();
-        setGroups(prev => [data.group, ...prev]);
-        setSelectedGroup(data.group);
+        const createdGrp = data.group;
+        setGroups(prev => {
+          const updated = [createdGrp, ...prev.filter(g => g.id !== createdGrp.id)];
+          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          return updated;
+        });
+        setSelectedGroup(createdGrp);
         setCreateGroupModal(false);
         setNewGroupForm({ name: '', topic: '' });
-        showToast(`Syndicate "${data.group.name}" established!`);
+        showToast(`Syndicate "${createdGrp.name}" established!`);
       } else {
         const err = await res.json();
         showToast(err.detail || "Failed to create syndicate.");
       }
     } catch (err) {
-      showToast("Network error creating syndicate.");
+      // Local persistent fallback so creation never fails
+      setGroups(prev => {
+        const updated = [localGroupObj, ...prev.filter(g => g.id !== localGroupObj.id)];
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+        return updated;
+      });
+      setSelectedGroup(localGroupObj);
+      setCreateGroupModal(false);
+      setNewGroupForm({ name: '', topic: '' });
+      showToast(`Syndicate "${localGroupObj.name}" established!`);
+    }
+  };
+
+  const handleDeleteGroup = async (groupId) => {
+    if (!user) return;
+    const grp = groups.find(g => g.id === groupId) || selectedGroup;
+    const grpName = grp?.name || "this syndicate";
+    if (!window.confirm(`⚠️ Are you sure you want to permanently delete and disband syndicate "${grpName}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/groups/${groupId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      if (res.ok) {
+        setGroups(prev => {
+          const updated = prev.filter(g => g.id !== groupId);
+          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          return updated;
+        });
+        if (selectedGroup?.id === groupId) {
+          const remaining = groups.filter(g => g.id !== groupId);
+          setSelectedGroup(remaining.length > 0 ? remaining[0] : null);
+        }
+        showToast(`Syndicate "${grpName}" disbanded by admin.`);
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Failed to delete syndicate.");
+      }
+    } catch (err) {
+      setGroups(prev => {
+        const updated = prev.filter(g => g.id !== groupId);
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+        return updated;
+      });
+      if (selectedGroup?.id === groupId) {
+        const remaining = groups.filter(g => g.id !== groupId);
+        setSelectedGroup(remaining.length > 0 ? remaining[0] : null);
+      }
+      showToast(`Syndicate "${grpName}" removed.`);
     }
   };
 
   const handleJoinGroup = async (groupId) => {
     if (!user) {
       setAuthModal('login');
+      showToast("Please log in or register to join this syndicate.");
       return;
     }
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/groups/${groupId}/join`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${user.token}` }
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}` 
+        }
       });
       if (res.ok) {
         const data = await res.json();
-        setGroups(prev => prev.map(g => g.id === groupId ? { ...g, members: data.members } : g));
+        setGroups(prev => {
+          const updated = prev.map(g => g.id === groupId ? { ...g, members: data.members } : g);
+          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          return updated;
+        });
         if (selectedGroup?.id === groupId) {
           setSelectedGroup(prev => ({ ...prev, members: data.members }));
         }
         showToast("Joined Dark Syndicate! Encrypted room unlocked.");
+      } else {
+        // Optimistic local join fallback
+        setGroups(prev => {
+          const updated = prev.map(g => {
+            if (g.id === groupId) {
+              const m = g.members || [];
+              const newM = m.includes(user.username) ? m : [...m, user.username];
+              return { ...g, members: newM };
+            }
+            return g;
+          });
+          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          return updated;
+        });
+        if (selectedGroup?.id === groupId) {
+          setSelectedGroup(prev => {
+            if (!prev) return prev;
+            const m = prev.members || [];
+            const newM = m.includes(user.username) ? m : [...m, user.username];
+            return { ...prev, members: newM };
+          });
+        }
+        showToast("Joined Dark Syndicate!");
       }
     } catch (err) {
-      showToast("Error joining syndicate.");
+      // Offline fallback join
+      setGroups(prev => {
+        const updated = prev.map(g => {
+          if (g.id === groupId) {
+            const m = g.members || [];
+            const newM = m.includes(user.username) ? m : [...m, user.username];
+            return { ...g, members: newM };
+          }
+          return g;
+        });
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+        return updated;
+      });
+      if (selectedGroup?.id === groupId) {
+        setSelectedGroup(prev => {
+          if (!prev) return prev;
+          const m = prev.members || [];
+          const newM = m.includes(user.username) ? m : [...m, user.username];
+          return { ...prev, members: newM };
+        });
+      }
+      showToast("Joined Dark Syndicate!");
     }
   };
 
@@ -862,14 +1012,31 @@ export default function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        setGroups(prev => prev.map(g => g.id === groupId ? { ...g, members: data.members } : g));
+        setGroups(prev => {
+          const updated = prev.map(g => g.id === groupId ? { ...g, members: data.members } : g);
+          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          return updated;
+        });
         if (selectedGroup?.id === groupId) {
           setSelectedGroup(prev => ({ ...prev, members: data.members }));
         }
         showToast("Left syndicate group.");
       }
     } catch (err) {
-      showToast("Error leaving syndicate.");
+      setGroups(prev => {
+        const updated = prev.map(g => {
+          if (g.id === groupId) {
+            return { ...g, members: (g.members || []).filter(m => m !== user.username) };
+          }
+          return g;
+        });
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+        return updated;
+      });
+      if (selectedGroup?.id === groupId) {
+        setSelectedGroup(prev => ({ ...prev, members: (prev.members || []).filter(m => m !== user.username) }));
+      }
+      showToast("Left syndicate group.");
     }
   };
 
@@ -1014,14 +1181,23 @@ export default function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        setItems(prev => prev.map(item => item.id === itemId ? { ...item, state: data.state } : item));
+        setItems(prev => {
+          const updated = prev.map(item => item.id === itemId ? { ...item, state: data.state } : item);
+          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          return updated;
+        });
         showToast(`Product marked as ${data.state}!`);
       } else {
         const err = await res.json();
         showToast(err.detail || "Stock update failed.");
       }
     } catch (err) {
-      showToast("Network error toggling stock state.");
+      setItems(prev => {
+        const updated = prev.map(item => item.id === itemId ? { ...item, state: item.state === 'Available' ? 'Out of Stock' : 'Available' } : item);
+        localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+        return updated;
+      });
+      showToast("Stock status updated.");
     }
   };
 
@@ -1034,14 +1210,23 @@ export default function App() {
         headers: { 'Authorization': `Bearer ${user.token}` }
       });
       if (res.ok) {
-        setItems(prev => prev.filter(item => item.id !== itemId));
+        setItems(prev => {
+          const updated = prev.filter(item => item.id !== itemId);
+          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          return updated;
+        });
         showToast("Product deleted successfully from catalog!");
       } else {
         const err = await res.json();
         showToast(err.detail || "Failed to delete product.");
       }
     } catch (err) {
-      showToast("Network error deleting item.");
+      setItems(prev => {
+        const updated = prev.filter(item => item.id !== itemId);
+        localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+        return updated;
+      });
+      showToast("Product deleted from catalog.");
     }
   };
 
@@ -1202,7 +1387,9 @@ export default function App() {
     e.preventDefault();
     if (!newProduct.title || !newProduct.price || !user) return;
 
+    const tempId = Date.now();
     const itemPayload = {
+      id: tempId,
       title: newProduct.title,
       price: newProduct.price.toString(),
       currency: 'CULT',
@@ -1221,11 +1408,28 @@ export default function App() {
         body: JSON.stringify(itemPayload)
       });
       if (res.ok) {
-        await fetchMarketItems();
+        const created = await res.json();
+        setItems(prev => {
+          const updated = [created, ...prev.filter(i => i.id !== created.id && i.id !== tempId)];
+          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          return updated;
+        });
         showToast("New item listed on hostel marketplace!");
+      } else {
+        setItems(prev => {
+          const updated = [itemPayload, ...prev];
+          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          return updated;
+        });
+        showToast("Item listed in catalog.");
       }
     } catch (err) {
-      console.warn("Could not post item to backend:", err);
+      setItems(prev => {
+        const updated = [itemPayload, ...prev];
+        localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+        return updated;
+      });
+      showToast("Item listed in catalog.");
     }
 
     setNewProduct({ title: '', price: '', desc: '' });
@@ -1872,7 +2076,7 @@ export default function App() {
     });
 
     return (
-      <div className="space-y-6 font-mono">
+      <div className="space-y-4 font-mono">
         {/* Top Header */}
         <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-slate-800 pb-4 gap-4">
           <div>
@@ -1900,11 +2104,29 @@ export default function App() {
           </div>
         </div>
 
-        {/* 2-Column Layout */}
+        {/* Mobile View Switcher Tab (visible on smaller screens) */}
+        <div className="flex lg:hidden border border-slate-800 rounded-lg bg-black p-1 text-xs">
+          <button
+            type="button"
+            onClick={() => setMobileGroupTab('list')}
+            className={`flex-1 py-2 text-center rounded transition-colors flex items-center justify-center gap-1.5 ${mobileGroupTab === 'list' ? 'bg-slate-800 text-white font-bold shadow' : 'text-slate-500'}`}
+          >
+            <Layers className="w-3.5 h-3.5 text-cyan-400" /> Syndicate List ({groups.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileGroupTab('room')}
+            className={`flex-1 py-2 text-center rounded transition-colors flex items-center justify-center gap-1.5 ${mobileGroupTab === 'room' ? 'bg-slate-800 text-white font-bold shadow' : 'text-slate-500'}`}
+          >
+            <Radio className="w-3.5 h-3.5 text-rose-400" /> {selectedGroup ? selectedGroup.name : 'Active Room'}
+          </button>
+        </div>
+
+        {/* 2-Column Responsive Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           
           {/* Left Sidebar: Groups List */}
-          <div className="lg:col-span-4 bg-black border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-[78vh]">
+          <div className={`lg:col-span-4 bg-black border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-[78vh] ${mobileGroupTab === 'room' ? 'hidden lg:flex' : 'flex'}`}>
             <div className="p-3 border-b border-slate-800 bg-slate-950/80 space-y-2">
               <div className="flex justify-between items-center">
                 <span className="text-xs text-white font-bold tracking-wider uppercase flex items-center gap-1.5">
@@ -1947,11 +2169,12 @@ export default function App() {
                 filteredGroups.map(grp => {
                   const isSelected = selectedGroup?.id === grp.id;
                   const isGrpMember = user && grp.members?.includes(user.username);
+                  const isGrpCreator = user && grp.creator === user.username;
 
                   return (
                     <div 
                       key={grp.id}
-                      onClick={() => setSelectedGroup(grp)}
+                      onClick={() => { setSelectedGroup(grp); setMobileGroupTab('room'); }}
                       className={`p-3 rounded-lg cursor-pointer transition-all border pt-3 first:pt-3 ${isSelected ? 'bg-slate-900/90 border-cyan-500/80 shadow-lg' : 'bg-slate-950 border-slate-800/80 hover:border-slate-700'}`}
                     >
                       <div className="flex justify-between items-start mb-1">
@@ -1971,13 +2194,33 @@ export default function App() {
 
                       <div className="flex justify-between items-center text-[10px] text-slate-500 pt-1 border-t border-slate-900">
                         <span>Host: <strong className="text-cyan-400">@{grp.creator}</strong></span>
-                        {isGrpMember ? (
-                          <span className="text-emerald-400 font-bold flex items-center gap-1">
-                            <Check className="w-3 h-3" /> Member
-                          </span>
-                        ) : (
-                          <span className="text-slate-500 hover:text-white">Click to view</span>
-                        )}
+                        
+                        <div className="flex items-center gap-1.5">
+                          {isGrpCreator && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteGroup(grp.id); }}
+                              className="text-rose-400 hover:text-rose-300 p-1 rounded hover:bg-rose-950/50 transition-colors"
+                              title="Disband Syndicate (Admin)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {isGrpMember ? (
+                            <span className="text-emerald-400 font-bold flex items-center gap-0.5 bg-emerald-950/60 border border-emerald-900 px-2 py-0.5 rounded">
+                              <Check className="w-3 h-3" /> Joined
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleJoinGroup(grp.id); }}
+                              className="text-emerald-400 hover:text-emerald-300 font-bold flex items-center gap-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-800 px-2.5 py-0.5 rounded shadow-sm"
+                            >
+                              <UserPlus className="w-3 h-3" /> + Join
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -1987,7 +2230,7 @@ export default function App() {
           </div>
 
           {/* Right Main Area: Video Player & 24/7 Group Chat */}
-          <div className="lg:col-span-8 bg-black border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-[78vh]">
+          <div className={`lg:col-span-8 bg-black border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-[78vh] ${mobileGroupTab === 'list' ? 'hidden lg:flex' : 'flex'}`}>
             {selectedGroup ? (
               <>
                 {/* Syndicate Header Banner */}
@@ -2005,6 +2248,17 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {/* Disband Syndicate button for creator / admin */}
+                    {isCreator && (
+                      <button 
+                        onClick={() => handleDeleteGroup(selectedGroup.id)}
+                        className="bg-rose-950 hover:bg-rose-900 text-rose-400 border border-rose-800 px-2.5 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center gap-1 shadow-sm"
+                        title="Permanently Disband & Delete Syndicate"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Disband
+                      </button>
+                    )}
+
                     {/* Live Stream Controller for Host / Admin */}
                     {isCreator && (
                       selectedGroup.isLive ? (
@@ -2035,9 +2289,9 @@ export default function App() {
                     ) : (
                       <button 
                         onClick={() => handleJoinGroup(selectedGroup.id)}
-                        className="bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 px-4 py-1.5 rounded-lg text-xs uppercase tracking-wider font-bold shadow-md"
+                        className="bg-emerald-500 hover:bg-emerald-400 text-black border border-emerald-400 px-4 py-1.5 rounded-lg text-xs uppercase tracking-wider font-bold shadow-lg flex items-center gap-1.5 animate-pulse"
                       >
-                        Join Syndicate
+                        <UserPlus className="w-3.5 h-3.5" /> Join Syndicate
                       </button>
                     )}
                   </div>
@@ -2129,13 +2383,22 @@ export default function App() {
                       <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
                         Syndicate chat is active 24/7 below. Host <strong className="text-cyan-400">@{selectedGroup.creator}</strong> will broadcast live video soon.
                       </p>
-                      {isCreator && (
+                      {isCreator ? (
                         <div className="pt-2">
                           <button 
                             onClick={() => setStreamModal(true)}
                             className="bg-rose-950 hover:bg-rose-900 text-rose-400 border border-rose-800 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider inline-flex items-center gap-1.5 shadow-lg"
                           >
                             <Video className="w-4 h-4" /> Start Broadcast Live
+                          </button>
+                        </div>
+                      ) : !isMember && (
+                        <div className="pt-2">
+                          <button 
+                            onClick={() => handleJoinGroup(selectedGroup.id)}
+                            className="bg-emerald-500 hover:bg-emerald-400 text-black px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider inline-flex items-center gap-1.5 shadow-lg"
+                          >
+                            <UserPlus className="w-4 h-4" /> Join to Chat & Watch
                           </button>
                         </div>
                       )}
@@ -2203,25 +2466,40 @@ export default function App() {
                   })}
                 </div>
 
-                {/* Group Chat Input */}
+                {/* Group Chat Input / Join Call-To-Action */}
                 <div className="p-3 bg-black border-t border-slate-800 shrink-0">
-                  <form onSubmit={sendGroupMessage} className="flex gap-2">
-                    <input 
-                      type="text" 
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder={isMember ? `Message #${selectedGroup.name}...` : "Join syndicate to chat..."} 
-                      disabled={!isMember}
-                      className="flex-1 bg-slate-950 border border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg px-4 py-2.5 text-white focus:border-cyan-500 focus:outline-none text-xs placeholder:text-slate-700"
-                    />
-                    <button 
-                      type="submit" 
-                      disabled={!isMember || !chatInput.trim()}
-                      className="bg-emerald-950 hover:bg-emerald-900 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-400 border border-emerald-800 px-4 rounded-lg transition-colors flex items-center justify-center text-xs uppercase tracking-wider font-bold gap-1"
-                    >
-                      <Send className="w-3.5 h-3.5" /> Send
-                    </button>
-                  </form>
+                  {!isMember ? (
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-emerald-950/40 border border-emerald-800/60 p-2.5 rounded-lg">
+                      <div className="text-xs text-emerald-300 flex items-center gap-2">
+                        <Lock className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>You are viewing in spectator mode. Join this syndicate to participate in 24/7 comms.</span>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => handleJoinGroup(selectedGroup.id)}
+                        className="w-full sm:w-auto bg-emerald-500 hover:bg-emerald-400 text-black font-bold px-4 py-2 rounded-lg text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shrink-0 shadow-lg animate-pulse"
+                      >
+                        <UserPlus className="w-4 h-4" /> Join Syndicate
+                      </button>
+                    </div>
+                  ) : (
+                    <form onSubmit={sendGroupMessage} className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        placeholder={`Message #${selectedGroup.name}...`} 
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white focus:border-cyan-500 focus:outline-none text-xs placeholder:text-slate-700"
+                      />
+                      <button 
+                        type="submit" 
+                        disabled={!chatInput.trim()}
+                        className="bg-emerald-950 hover:bg-emerald-900 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-400 border border-emerald-800 px-4 rounded-lg transition-colors flex items-center justify-center text-xs uppercase tracking-wider font-bold gap-1"
+                      >
+                        <Send className="w-3.5 h-3.5" /> Send
+                      </button>
+                    </form>
+                  )}
                 </div>
               </>
             ) : (

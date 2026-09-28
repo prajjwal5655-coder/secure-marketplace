@@ -1045,6 +1045,44 @@ async def get_group_viewers(group_id: str):
     viewers = len(manager.active_connections.get(room_id, []))
     return {"group_id": group_id, "viewers": viewers}
 
+@app.delete("/api/groups/{group_id}")
+async def delete_group(group_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    username = user_payload["username"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT creator, name FROM dark_groups WHERE id = ?", (group_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Syndicate group not found.")
+
+    creator, group_name = row[0], row[1]
+    if creator != username and user_payload.get("role") != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Unauthorized: Only the syndicate creator / admin can delete this group.")
+
+    cursor.execute("DELETE FROM dark_groups WHERE id = ?", (group_id,))
+    cursor.execute("DELETE FROM messages WHERE room_id = ?", (f"group_{group_id}",))
+    conn.commit()
+    conn.close()
+
+    # Broadcast disband event
+    disband_event = {
+        "type": "GROUP_DISBANDED",
+        "groupId": group_id,
+        "message": f"⚠️ Syndicate [{group_name}] has been disbanded by host @{username}."
+    }
+    await manager.broadcast_raw(json.dumps(disband_event), f"group_{group_id}")
+
+    return {"status": "success", "message": f"Syndicate {group_name} deleted successfully."}
+
 # ==================== WEBSOCKETS ====================
 
 @app.websocket("/ws/chat/global")

@@ -37,6 +37,15 @@ def patch_json(url, data, token=None):
     with urllib.request.urlopen(req) as response:
         return json.loads(response.read().decode('utf-8'))
 
+def delete_json(url, token=None):
+    req = urllib.request.Request(
+        url,
+        headers={'Authorization': f'Bearer {token}'} if token else {},
+        method='DELETE'
+    )
+    with urllib.request.urlopen(req) as response:
+        return json.loads(response.read().decode('utf-8'))
+
 def test_groups_and_streaming():
     print("--- 1. Testing Registration for Host & Member ---")
     ts = int(time.time())
@@ -102,7 +111,16 @@ def test_groups_and_streaming():
     print("Host ended stream:", stream_off)
     assert stream_off["isLive"] is False
 
-    print("\n=== ALL GROUP, STREAMING & REAL VIEWER INTEGRATION TESTS PASSED! ===")
+    print("\n--- 7. Testing Disbanding / Deleting Syndicate by Creator ---")
+    del_res = delete_json(f"{BASE_URL}/api/groups/{group_id}", token=host["token"])
+    print("Host deleted syndicate:", del_res)
+    assert del_res["status"] == "success"
+
+    all_groups_after = get_json(f"{BASE_URL}/api/groups")
+    assert not any(g["id"] == group_id for g in all_groups_after)
+    print("Verified syndicate completely removed from directory.")
+
+    print("\n=== ALL GROUP, STREAMING, REAL VIEWER & DISBAND INTEGRATION TESTS PASSED! ===")
 
 if __name__ == "__main__":
     test_groups_and_streaming()
