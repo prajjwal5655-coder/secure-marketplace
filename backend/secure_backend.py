@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
-app = FastAPI(title="Nexus Secure Dark Marketplace & Syndicate Relay API")
+app = FastAPI(title="TON 618 Ultramassive Dark Marketplace & Syndicate Relay API")
 
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
@@ -339,7 +339,7 @@ def get_private_room_key(u1: str, u2: str) -> str:
 
 @app.get("/")
 async def root():
-    return {"status": "online", "system": "Nexus Secure Dark Marketplace & Syndicate Relay API"}
+    return {"status": "online", "system": "TON 618 Ultramassive Dark Marketplace & Syndicate Relay API"}
 
 @app.get("/api/items")
 async def get_items():

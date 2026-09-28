@@ -14,7 +14,7 @@ import {
 
 async function getDynamicRoomKey(roomId) {
   const enc = new TextEncoder();
-  const roomSecret = `NEXUS_CHAT_ROOM_SALT_2026_${roomId}_SECURE_HMAC`;
+  const roomSecret = `TON618_CHAT_ROOM_SALT_2026_${roomId}_SECURE_HMAC`;
   const keyMaterial = await window.crypto.subtle.importKey(
     "raw",
     enc.encode(roomSecret),
@@ -107,7 +107,7 @@ export default function App() {
   const [activePrivateChat, setActivePrivateChat] = useState(null);
   
   const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('nexus_user');
+    const saved = localStorage.getItem('ton618_user') || localStorage.getItem('nexus_user');
     return saved ? JSON.parse(saved) : null;
   });
 
@@ -129,7 +129,7 @@ export default function App() {
   // Group Dark & Live Streaming States (Persisted in localStorage so never lost on logout)
   const [groups, setGroups] = useState(() => {
     try {
-      const saved = localStorage.getItem('nexus_persisted_groups');
+      const saved = localStorage.getItem('ton618_persisted_groups') || localStorage.getItem('nexus_persisted_groups');
       return saved ? JSON.parse(saved) : [];
     } catch (e) {
       return [];
@@ -137,7 +137,7 @@ export default function App() {
   });
   const [selectedGroup, setSelectedGroup] = useState(() => {
     try {
-      const saved = localStorage.getItem('nexus_selected_group');
+      const saved = localStorage.getItem('ton618_selected_group') || localStorage.getItem('nexus_selected_group');
       return saved ? JSON.parse(saved) : null;
     } catch (e) {
       return null;
@@ -189,7 +189,7 @@ export default function App() {
   // Marketplace items (Persisted in localStorage so never lost on logout)
   const [items, setItems] = useState(() => {
     try {
-      const saved = localStorage.getItem('nexus_persisted_items');
+      const saved = localStorage.getItem('ton618_persisted_items') || localStorage.getItem('nexus_persisted_items');
       return saved ? JSON.parse(saved) : [];
     } catch (e) {
       return [];
@@ -209,7 +209,7 @@ export default function App() {
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           setItems(data);
-          localStorage.setItem('nexus_persisted_items', JSON.stringify(data));
+          localStorage.setItem('ton618_persisted_items', JSON.stringify(data));
         }
       }
     } catch (err) {
@@ -224,7 +224,7 @@ export default function App() {
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           setGroups(data);
-          localStorage.setItem('nexus_persisted_groups', JSON.stringify(data));
+          localStorage.setItem('ton618_persisted_groups', JSON.stringify(data));
           setSelectedGroup(prev => {
             if (!prev) {
               return data[0];
@@ -653,21 +653,21 @@ export default function App() {
     canvas.width = 640;
     canvas.height = 360;
 
-    const chars = '0123456789ABCDEF$#<>*~{}[]|/@=+-NEXUS-CULT-ONION-ROOT';
+    const chars = '0123456789ABCDEF$#<>*~{}[]|/@=+-TON-618-BLACKHOLE-QUASAR-CULT';
     const fontSize = 14;
     const columns = Math.floor(canvas.width / fontSize);
     const drops = Array(columns).fill(1);
 
     const drawMatrix = () => {
-      ctx.fillStyle = 'rgba(4, 5, 8, 0.15)';
+      ctx.fillStyle = 'rgba(2, 3, 7, 0.2)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.fillStyle = '#00ff66';
+      ctx.fillStyle = '#f59e0b';
       ctx.font = `${fontSize}px monospace`;
 
       for (let i = 0; i < drops.length; i++) {
         const text = chars.charAt(Math.floor(Math.random() * chars.length));
-        ctx.fillStyle = i % 4 === 0 ? '#00f0ff' : '#00ff66';
+        ctx.fillStyle = i % 3 === 0 ? '#06b6d4' : i % 2 === 0 ? '#f59e0b' : '#10b981';
         ctx.fillText(text, i * fontSize, drops[i] * fontSize);
 
         if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
@@ -679,11 +679,11 @@ export default function App() {
       // Add Cyber HUD overlay text
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 12px monospace';
-      ctx.fillText(`[NEXUS SYNDICATE LIVE FEED]`, 20, 25);
-      ctx.fillStyle = '#ff0055';
+      ctx.fillText(`[TON 618 SYNDICATE LIVE FEED]`, 20, 25);
+      ctx.fillStyle = '#f43f5e';
       ctx.fillText(`● LIVE STREAMING`, 20, 45);
-      ctx.fillStyle = '#00f0ff';
-      ctx.fillText(`BITRATE: 4.8 Mbps | FPS: 60 | ENC: AES-256`, 20, 65);
+      ctx.fillStyle = '#06b6d4';
+      ctx.fillText(`GRAVITATIONAL RELAY: ACTIVE | FPS: 60 | ENC: AES-256`, 20, 65);
 
       animationFrameId = requestAnimationFrame(drawMatrix);
     };
@@ -1599,7 +1599,7 @@ export default function App() {
             {authModal === 'register' && (
               <div className="space-y-1">
                 <label className="text-[10px] text-slate-500 uppercase tracking-widest">Email Node</label>
-                <input required type="email" name="email" onChange={handleAuthChange} className="w-full bg-black border border-slate-800 rounded-lg px-4 py-2.5 text-white focus:border-cyan-500 focus:outline-none text-sm" placeholder="agent@nexus.onion" />
+                <input required type="email" name="email" onChange={handleAuthChange} className="w-full bg-black border border-slate-800 rounded-lg px-4 py-2.5 text-white focus:border-cyan-500 focus:outline-none text-sm" placeholder="agent@ton618.onion" />
               </div>
             )}
 
@@ -2712,10 +2712,10 @@ export default function App() {
                       <div className="w-12 h-12 bg-slate-900 rounded-full flex items-center justify-center mx-auto border border-slate-800 mb-2">
                         <Tv className="w-6 h-6 text-slate-600" />
                       </div>
-                      <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                        [NEXUS SYNDICATE FEED // OFFLINE - HOST STANDBY]
+                      <div className="text-xs font-bold text-amber-400 uppercase tracking-wider glow-text-ton">
+                        [TON 618 SYNDICATE FEED // OFFLINE - HOST STANDBY]
                       </div>
-                      <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+                      <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
                         Syndicate chat is active 24/7 below. Host <strong className="text-cyan-400">@{selectedGroup.creator}</strong> will broadcast live video soon.
                       </p>
                       {isCreator ? (
@@ -2861,7 +2861,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen matrix-bg dark-scanline text-slate-200 font-sans">
+    <div className="min-h-screen ton618-space-bg text-slate-200 font-sans relative">
       {renderAuthModal()}
       {renderCreateGroupModal()}
       {renderStreamModal()}
@@ -2877,28 +2877,33 @@ export default function App() {
         </div>
       )}
 
-      {/* Dark Web Onion Circuit Header Strip */}
-      <div className="bg-black/90 border-b border-slate-900 px-4 py-1 text-[10px] font-mono text-slate-500 flex flex-wrap items-center justify-between">
+      {/* TON 618 Event Horizon Circuit Header Strip */}
+      <div className="bg-black/90 border-b border-amber-500/20 px-4 py-1 text-[10px] font-mono text-slate-400 flex flex-wrap items-center justify-between backdrop-blur-md relative z-20">
         <div className="flex items-center gap-2">
-          <span className="text-emerald-400 flex items-center gap-1 font-bold">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-            ONION CIRCUIT ACTIVE
+          <span className="text-amber-400 flex items-center gap-1.5 font-bold">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+            TON 618 EVENT HORIZON CIRCUIT
           </span>
           <span className="hidden sm:inline text-slate-700">|</span>
-          <span className="hidden sm:inline">127.0.0.1 -&gt; RELAY-X09 -&gt; TOR-NEXUS-CORE</span>
+          <span className="hidden sm:inline text-slate-400">127.0.0.1 -&gt; RELAY-TON618 -&gt; TOR-TON618-CORE</span>
         </div>
         <div className="flex items-center gap-3 text-slate-400">
-          <span>AES-256-GCM</span>
+          <span className="text-cyan-400 font-mono">AES-256-GCM AEAD</span>
           <span className="text-amber-400 font-bold">1 CULT = ₹100 INR</span>
         </div>
       </div>
 
       {/* Top Navigation Bar */}
-      <nav className="border-b border-slate-800/80 bg-black/90 backdrop-blur-md sticky top-0 z-40">
+      <nav className="border-b border-amber-500/20 bg-black/80 backdrop-blur-xl sticky top-0 z-40 shadow-2xl">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-white font-mono font-bold text-xl tracking-widest cursor-pointer group" onClick={() => setActiveView('marketplace')}>
-                <Shield className="w-6 h-6 text-cyan-500 group-hover:text-emerald-400 transition-colors" />
-                <span className="glow-text-cyan">NEXUS<span className="text-cyan-500 opacity-70">DARK</span></span>
+            <div className="flex items-center gap-2.5 text-white font-mono font-bold text-xl tracking-widest cursor-pointer group" onClick={() => setActiveView('marketplace')}>
+                <div className="relative flex items-center justify-center w-8 h-8 rounded-full bg-black border border-amber-500/80 shadow-lg group-hover:border-amber-400 accretion-pulse">
+                  <span className="w-3.5 h-3.5 rounded-full bg-black border border-cyan-400"></span>
+                  <span className="absolute inset-0 rounded-full border border-amber-500/40 animate-ping"></span>
+                </div>
+                <span className="glow-text-ton font-extrabold text-amber-400 tracking-wider">
+                  TON <span className="text-cyan-400">618</span>
+                </span>
             </div>
             
             <div className="hidden md:flex gap-5 font-mono text-xs uppercase tracking-wider">
@@ -2994,15 +2999,15 @@ export default function App() {
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="max-w-7xl mx-auto px-4 py-8 relative z-10">
         
         {/* Marketplace View */}
         {activeView === 'marketplace' && (
             <div className="space-y-6 font-mono">
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-slate-800 pb-4 gap-4">
                     <div>
-                      <h2 className="text-3xl font-bold text-white tracking-tight uppercase glow-text-cyan">Secure Dark Marketplace</h2>
-                      <p className="text-slate-500 text-xs mt-1 uppercase tracking-widest">Encrypted P2P Commerce with Escrow, COD & Syndicate Relays.</p>
+                      <h2 className="text-3xl font-bold text-amber-400 tracking-tight uppercase glow-text-ton">TON 618 Dark Marketplace</h2>
+                      <p className="text-slate-400 text-xs mt-1 uppercase tracking-widest">Encrypted P2P Commerce with Escrow, COD & Syndicate Relays.</p>
                     </div>
                     <div className="flex items-center gap-3">
                       <button 
@@ -3357,10 +3362,10 @@ export default function App() {
               <div className="flex items-center justify-between border-b border-slate-800 pb-6">
                 <div>
                   <div className="flex items-center gap-2 text-white font-bold text-xl tracking-widest">
-                    <Shield className="w-6 h-6 text-emerald-400" />
-                    <span>NEXUS<span className="text-emerald-400">RECEIPT</span></span>
+                    <Shield className="w-6 h-6 text-amber-400" />
+                    <span className="glow-text-ton text-amber-400">TON 618 <span className="text-cyan-400">RECEIPT</span></span>
                   </div>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-1">Hostel Marketplace Verified Transaction</p>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-1">TON 618 Network Verified Transaction</p>
                 </div>
                 <div className="text-right">
                   <span className="bg-emerald-950 text-emerald-400 border border-emerald-800 px-3 py-1 rounded text-xs font-bold uppercase tracking-wider block">
