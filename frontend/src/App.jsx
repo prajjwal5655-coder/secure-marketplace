@@ -14,7 +14,7 @@ import {
 
 async function getDynamicRoomKey(roomId) {
   const enc = new TextEncoder();
-  const roomSecret = `NEXUS_CHAT_ROOM_SALT_2026_${roomId}`;
+  const roomSecret = `NEXUS_CHAT_ROOM_SALT_2026_${roomId}_SECURE_HMAC`;
   const keyMaterial = await window.crypto.subtle.importKey(
     "raw",
     enc.encode(roomSecret),
@@ -25,7 +25,7 @@ async function getDynamicRoomKey(roomId) {
   return window.crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt: enc.encode(`SALT_${roomId}`),
+      salt: enc.encode(`SALT_AEAD_256_${roomId}`),
       iterations: 100000,
       hash: "SHA-256"
     },
@@ -113,12 +113,13 @@ export default function App() {
 
   const [cultBalance, setCultBalance] = useState(0.0);
   const [topUpModalOpen, setTopUpModalOpen] = useState(false);
-  const [topUpTab, setTopUpTab] = useState('topup'); // 'topup' | 'history'
+  const [topUpTab, setTopUpTab] = useState('topup'); // 'topup' | 'history' | 'admin_queue'
   const [topUpAmount, setTopUpAmount] = useState(10);
   const [utrInput, setUtrInput] = useState('');
   const [topUpError, setTopUpError] = useState('');
   const [topUpReceipt, setTopUpReceipt] = useState(null);
   const [topUpHistory, setTopUpHistory] = useState([]);
+  const [adminPendingUtrs, setAdminPendingUtrs] = useState([]);
   
   const [vendorOrders, setVendorOrders] = useState([]);
   const [vendorTab, setVendorTab] = useState('products'); // 'products' | 'orders'
@@ -265,6 +266,45 @@ export default function App() {
       }
     } catch (err) {
       console.warn("Could not fetch transactions:", err);
+    }
+  };
+
+  const fetchPendingUtrs = async () => {
+    if (!user || !user.token || user.role !== 'admin') return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/admin/utr/pending`, {
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminPendingUtrs(data);
+      }
+    } catch (e) {
+      console.warn("Could not fetch pending UTRs:", e);
+    }
+  };
+
+  const handleReviewUtr = async (txId, action, notes = '') => {
+    if (!user || user.role !== 'admin') return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/admin/utr/${txId}/review`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ action, notes })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(action === 'APPROVE' ? `✅ UTR Approved & +${data.credited} CULT credited to @${data.username}` : `❌ UTR Rejected for @${data.username}`);
+        fetchPendingUtrs();
+        fetchWalletBalance(user.username, user.token);
+      } else {
+        showToast(data.detail || "Review action failed.");
+      }
+    } catch (e) {
+      showToast("Server request failed.");
     }
   };
 
@@ -826,11 +866,19 @@ export default function App() {
         return;
       }
 
-      setCultBalance(data.cultBalance);
-      setTopUpReceipt(data.receipt);
-      showToast(`UTR Verified! Credited +${topUpAmount} CULT Coins to your wallet.`);
+      if (data.status === 'pending_verification') {
+        setTopUpReceipt(data.receipt);
+        showToast(`⏳ UTR ${cleanUtr} submitted! Awaiting Admin Bank Verification.`);
+      } else {
+        setCultBalance(data.cultBalance);
+        setTopUpReceipt(data.receipt);
+        showToast(`UTR Verified! Credited +${topUpAmount} CULT Coins to your wallet.`);
+      }
       setUtrInput('');
       fetchWalletTransactions(user.username, user.token);
+      if (user.role === 'admin') {
+        fetchPendingUtrs();
+      }
     } catch (err) {
       setTopUpError("Backend verification request failed. Ensure server is online.");
     }
@@ -1773,19 +1821,75 @@ export default function App() {
             >
               <History className="w-3.5 h-3.5" /> UTR History & Logs
             </button>
+            {user?.role === 'admin' && (
+              <button 
+                onClick={() => { setTopUpTab('admin_queue'); fetchPendingUtrs(); }}
+                className={`flex-1 py-2.5 text-center transition-colors flex items-center justify-center gap-1.5 ${topUpTab === 'admin_queue' ? 'text-rose-400 border-b-2 border-rose-400 font-bold bg-rose-950/10' : 'text-slate-500 hover:text-white'}`}
+              >
+                <Shield className="w-3.5 h-3.5" /> Admin Queue ({adminPendingUtrs.length})
+              </button>
+            )}
           </div>
 
           <div className="overflow-y-auto p-5 flex-1 space-y-4">
-            {topUpTab === 'history' ? (
+            {topUpTab === 'admin_queue' ? (
               <div className="space-y-3">
                 <div className="flex justify-between items-center text-xs text-slate-400 border-b border-slate-800 pb-2">
-                  <span>Verified UTR Recharges</span>
+                  <span>Pending UTR Deposits ({adminPendingUtrs.length})</span>
+                  <button onClick={fetchPendingUtrs} className="text-cyan-400 hover:underline flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3"/> Refresh
+                  </button>
+                </div>
+                {adminPendingUtrs.length === 0 ? (
+                  <div className="text-center py-8 text-slate-600 text-xs">
+                    No pending UTR deposits requiring review.
+                  </div>
+                ) : (
+                  adminPendingUtrs.map(tx => (
+                    <div key={tx.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs space-y-2">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="text-white font-bold flex items-center gap-1.5">
+                            <span>@{tx.username}</span>
+                            <span className="text-amber-400">+{tx.cultAmount} CULT (₹{tx.inrAmount})</span>
+                          </div>
+                          <div className="text-slate-400 text-[11px] font-mono mt-0.5">
+                            UTR Ref: <strong className="text-cyan-400">{tx.utrRef}</strong>
+                          </div>
+                          <div className="text-slate-600 text-[10px]">{tx.timestamp}</div>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 pt-1 border-t border-slate-800/80">
+                        <button 
+                          onClick={() => handleReviewUtr(tx.id, 'APPROVE')}
+                          className="flex-1 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 py-1.5 rounded text-xs font-bold transition-colors"
+                        >
+                          ✅ Approve & Credit
+                        </button>
+                        <button 
+                          onClick={() => {
+                            const reason = window.prompt("Enter rejection reason (optional):", "Invalid reference number / unpaid");
+                            if (reason !== null) handleReviewUtr(tx.id, 'REJECT', reason);
+                          }}
+                          className="flex-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 py-1.5 rounded text-xs font-bold transition-colors"
+                        >
+                          ❌ Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : topUpTab === 'history' ? (
+              <div className="space-y-3">
+                <div className="flex justify-between items-center text-xs text-slate-400 border-b border-slate-800 pb-2">
+                  <span>Recharge & UTR Log</span>
                   <span className="text-amber-400 font-bold">{cultBalance.toFixed(2)} CULT Available</span>
                 </div>
 
                 {topUpHistory.length === 0 ? (
                   <div className="text-center py-8 text-slate-600 text-xs">
-                    No verified UTR recharges found.
+                    No UTR recharges recorded.
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -1801,6 +1905,21 @@ export default function App() {
                         <div className="text-right">
                           <div className="text-amber-400 font-bold">+{tx.cultAmount} CULT</div>
                           <div className="text-slate-500 text-[10px]">₹{tx.inrAmount.toLocaleString('en-IN')} INR</div>
+                          <div className="mt-1">
+                            {tx.status === 'APPROVED_AND_CREDITED' || tx.status === 'VERIFIED_AND_CREDITED' ? (
+                              <span className="text-[9px] bg-emerald-950 text-emerald-400 border border-emerald-800 px-1.5 py-0.5 rounded font-bold">
+                                ✅ Credited
+                              </span>
+                            ) : tx.status === 'PENDING_ADMIN_VERIFICATION' ? (
+                              <span className="text-[9px] bg-amber-950 text-amber-300 border border-amber-800 px-1.5 py-0.5 rounded font-bold animate-pulse">
+                                ⏳ Pending Review
+                              </span>
+                            ) : (
+                              <span className="text-[9px] bg-rose-950 text-rose-400 border border-rose-800 px-1.5 py-0.5 rounded font-bold">
+                                ❌ Rejected
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -1809,11 +1928,19 @@ export default function App() {
               </div>
             ) : topUpReceipt ? (
               <div className="space-y-4">
-                <div className="bg-emerald-950/30 border border-emerald-800 rounded-xl p-4 text-center space-y-2">
-                  <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
-                  <h3 className="text-white font-bold text-base uppercase">Payment Verified & Credited</h3>
-                  <p className="text-emerald-400 text-xs">+{topUpReceipt.cultCredited} CULT Coins added to @{topUpReceipt.username}</p>
-                </div>
+                {topUpReceipt.status === 'Pending Admin Verification' ? (
+                  <div className="bg-amber-950/30 border border-amber-800 rounded-xl p-4 text-center space-y-2">
+                    <Clock className="w-10 h-10 text-amber-400 mx-auto animate-pulse" />
+                    <h3 className="text-white font-bold text-base uppercase">UTR Queued for Verification</h3>
+                    <p className="text-amber-300 text-xs">Submitted reference #{topUpReceipt.utrRef}. Funds will be credited upon bank verification.</p>
+                  </div>
+                ) : (
+                  <div className="bg-emerald-950/30 border border-emerald-800 rounded-xl p-4 text-center space-y-2">
+                    <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+                    <h3 className="text-white font-bold text-base uppercase">Payment Verified & Credited</h3>
+                    <p className="text-emerald-400 text-xs">+{topUpReceipt.cultCredited || topUpReceipt.cultAmount} CULT Coins added to @{topUpReceipt.username}</p>
+                  </div>
+                )}
 
                 <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2 text-xs">
                   <div className="flex justify-between text-slate-400">
@@ -1825,12 +1952,12 @@ export default function App() {
                     <span className="text-amber-400 font-bold">{topUpReceipt.utrRef}</span>
                   </div>
                   <div className="flex justify-between text-slate-400">
-                    <span>Amount Paid:</span>
+                    <span>Amount:</span>
                     <span className="text-white font-bold">₹{topUpReceipt.inrPaid.toLocaleString('en-IN')} INR</span>
                   </div>
                   <div className="flex justify-between text-slate-400">
-                    <span>Recipient:</span>
-                    <span className="text-white">{topUpReceipt.recipientName} ({topUpReceipt.recipientUPI})</span>
+                    <span>Status:</span>
+                    <span className="text-amber-400 font-bold">{topUpReceipt.status}</span>
                   </div>
                   <div className="flex justify-between text-slate-400">
                     <span>Timestamp:</span>

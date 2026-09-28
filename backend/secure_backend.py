@@ -6,6 +6,7 @@ import bcrypt
 import jwt
 import time
 import re
+import secrets
 from datetime import datetime, timedelta
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,20 +15,61 @@ from typing import Dict, List, Optional
 
 app = FastAPI(title="Nexus Secure Dark Marketplace & Syndicate Relay API")
 
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://secure-marketplace-ten.vercel.app"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https:\/\/.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "marketplace.db")
-JWT_SECRET = "NEXUS_JWT_SUPER_SECRET_KEY_HOSTEL_2026_SECURITY_TOKEN"
+
+# Hardened JWT Secret: load from environment variable or securely auto-generate a 256-bit key
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".jwt_secret")
+    if os.path.exists(secret_file):
+        try:
+            with open(secret_file, "r") as f:
+                JWT_SECRET = f.read().strip()
+        except Exception:
+            JWT_SECRET = None
+    if not JWT_SECRET:
+        JWT_SECRET = secrets.token_hex(32)
+        try:
+            with open(secret_file, "w") as f:
+                f.write(JWT_SECRET)
+        except Exception:
+            pass
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
 LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+REGISTER_ATTEMPTS: Dict[str, List[float]] = {}
+TOPUP_ATTEMPTS: Dict[str, List[float]] = {}
+FRAME_RATE_TRACKER: Dict[str, float] = {}
+
+def check_rate_limit(store: Dict[str, List[float]], key: str, max_attempts: int = 5, window_seconds: int = 60):
+    now = time.time()
+    attempts = [t for t in store.get(key, []) if now - t < window_seconds]
+    if len(attempts) >= max_attempts:
+        raise HTTPException(
+            status_code=429, 
+            detail=f"Rate limit exceeded: maximum {max_attempts} requests per {window_seconds}s. Please wait before retrying."
+        )
+    attempts.append(now)
+    store[key] = attempts
 
 def get_db():
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
@@ -223,6 +265,10 @@ class TopUpRequest(BaseModel):
     amount: float
     utr_ref: str
 
+class AdminUtrReviewRequest(BaseModel):
+    action: str  # 'APPROVE' or 'REJECT'
+    notes: Optional[str] = ""
+
 class OrderModel(BaseModel):
     id: str
     username: str
@@ -399,6 +445,8 @@ async def delete_item(item_id: int, authorization: Optional[str] = Header(None))
 
 @app.post("/api/auth/register")
 async def register(req: AuthRegisterRequest):
+    check_rate_limit(REGISTER_ATTEMPTS, req.username, max_attempts=5, window_seconds=60)
+    
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT username FROM users WHERE username = ?", (req.username,))
@@ -426,10 +474,7 @@ async def register(req: AuthRegisterRequest):
 
 @app.post("/api/auth/login")
 async def login(req: AuthLoginRequest):
-    now = time.time()
-    user_attempts = [t for t in LOGIN_ATTEMPTS.get(req.username, []) if now - t < 60]
-    if len(user_attempts) >= 5:
-        raise HTTPException(status_code=429, detail="Too many failed login attempts. Please wait 60 seconds.")
+    check_rate_limit(LOGIN_ATTEMPTS, req.username, max_attempts=5, window_seconds=60)
     
     conn = get_db()
     cursor = conn.cursor()
@@ -438,8 +483,6 @@ async def login(req: AuthLoginRequest):
     conn.close()
     
     if not user_row or not verify_password(req.password, user_row[2]):
-        user_attempts.append(now)
-        LOGIN_ATTEMPTS[req.username] = user_attempts
         raise HTTPException(status_code=401, detail="Invalid alias or passphrase.")
     
     LOGIN_ATTEMPTS[req.username] = []
@@ -511,6 +554,8 @@ async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = He
     if user_payload["username"] != req.username:
         raise HTTPException(status_code=403, detail="Unauthorized wallet modification.")
 
+    check_rate_limit(TOPUP_ATTEMPTS, req.username, max_attempts=4, window_seconds=60)
+
     clean_utr = req.utr_ref.strip()
     if not re.match(r"^\d{12}$", clean_utr):
         raise HTTPException(
@@ -524,51 +569,133 @@ async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = He
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT utr_ref, username FROM utr_transactions WHERE utr_ref = ?", (clean_utr,))
+    cursor.execute("SELECT utr_ref, username, status FROM utr_transactions WHERE utr_ref = ?", (clean_utr,))
     existing_utr = cursor.fetchone()
     if existing_utr:
         conn.close()
         raise HTTPException(
             status_code=400, 
-            detail=f"Security Violation: UTR {clean_utr} has already been redeemed and credited by @{existing_utr[1]}."
+            detail=f"Security Violation: UTR {clean_utr} is already submitted ({existing_utr[2]}) by @{existing_utr[1]}."
         )
 
     cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (req.username,))
     row = cursor.fetchone()
     current_bal = row[0] if row and row[0] is not None else 0.0
     
-    new_balance = current_bal + req.amount
     inr_amount = req.amount * 100.0
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Save to queue as PENDING_ADMIN_VERIFICATION (Protected from fraudulent immediate credit)
     cursor.execute(
         "INSERT INTO utr_transactions (utr_ref, username, cult_amount, inr_amount, timestamp, status) VALUES (?, ?, ?, ?, ?, ?)",
-        (clean_utr, req.username, req.amount, inr_amount, timestamp_str, "VERIFIED_AND_CREDITED")
+        (clean_utr, req.username, req.amount, inr_amount, timestamp_str, "PENDING_ADMIN_VERIFICATION")
     )
-
-    cursor.execute("UPDATE users SET cult_balance = ? WHERE username = ?", (new_balance, req.username))
+    tx_id = cursor.lastrowid
     conn.commit()
     conn.close()
     
     topup_receipt = {
-        "receiptId": f"TOP-{int(time.time())}",
+        "receiptId": f"TOP-{tx_id}-{int(time.time()) % 100000}",
         "utrRef": clean_utr,
         "username": req.username,
-        "cultCredited": req.amount,
+        "cultAmount": req.amount,
         "inrPaid": inr_amount,
         "date": timestamp_str,
         "recipientUPI": "prajjwal5655@okicici",
         "recipientName": "Prajjwal Maurya",
-        "status": "Verified & Credited"
+        "status": "Pending Admin Verification"
     }
 
     return {
-        "status": "success", 
+        "status": "pending_verification", 
         "username": req.username, 
-        "cultBalance": new_balance, 
-        "credited": req.amount,
-        "receipt": topup_receipt
+        "cultBalance": current_bal, 
+        "pendingAmount": req.amount,
+        "receipt": topup_receipt,
+        "message": f"UTR {clean_utr} submitted for verification. Funds will be credited once verified by Admin."
     }
+
+@app.get("/api/admin/utr/pending")
+async def get_pending_utrs(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    if user_payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Unauthorized: Admin access required.")
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, utr_ref, username, cult_amount, inr_amount, timestamp, status FROM utr_transactions WHERE status = 'PENDING_ADMIN_VERIFICATION' ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    pending_list = []
+    for r in rows:
+        pending_list.append({
+            "id": r[0],
+            "utrRef": r[1],
+            "username": r[2],
+            "cultAmount": r[3],
+            "inrAmount": r[4],
+            "timestamp": r[5],
+            "status": r[6]
+        })
+    return pending_list
+
+@app.patch("/api/admin/utr/{tx_id}/review")
+async def review_utr_transaction(tx_id: int, req: AdminUtrReviewRequest, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    if user_payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Unauthorized: Admin access required.")
+    
+    action = req.action.upper()
+    if action not in ["APPROVE", "REJECT"]:
+        raise HTTPException(status_code=400, detail="Action must be 'APPROVE' or 'REJECT'.")
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, utr_ref, username, cult_amount, status FROM utr_transactions WHERE id = ?", (tx_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Transaction record not found.")
+    
+    t_id, utr_ref, target_username, cult_amount, current_status = row[0], row[1], row[2], row[3], row[4]
+    if current_status != "PENDING_ADMIN_VERIFICATION":
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Transaction is already in '{current_status}' state.")
+    
+    timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if action == "APPROVE":
+        cursor.execute("UPDATE users SET cult_balance = cult_balance + ? WHERE username = ?", (cult_amount, target_username))
+        cursor.execute("UPDATE utr_transactions SET status = 'APPROVED_AND_CREDITED' WHERE id = ?", (tx_id,))
+        
+        notif_msg = f"🎉 Deposit Verified: +{cult_amount} CULT Coins credited to your wallet for UPI UTR {utr_ref}."
+        cursor.execute(
+            "INSERT INTO notifications (recipient, sender, title, message, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (target_username, "SYSTEM_ESCROW_BOT", "Deposit Verified & Credited", notif_msg, f"TX-{tx_id}", timestamp_now)
+        )
+        conn.commit()
+        conn.close()
+        return {"status": "success", "action": "APPROVED", "tx_id": tx_id, "credited": cult_amount, "username": target_username}
+    else:
+        cursor.execute("UPDATE utr_transactions SET status = 'REJECTED_INVALID_UTR' WHERE id = ?", (tx_id,))
+        
+        notif_msg = f"⚠️ Deposit Verification Failed: UTR {utr_ref} could not be confirmed with bank records. Reason: {req.notes or 'Invalid transfer details'}"
+        cursor.execute(
+            "INSERT INTO notifications (recipient, sender, title, message, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (target_username, "SYSTEM_ESCROW_BOT", "Deposit Rejected", notif_msg, f"TX-{tx_id}", timestamp_now)
+        )
+        conn.commit()
+        conn.close()
+        return {"status": "success", "action": "REJECTED", "tx_id": tx_id, "username": target_username}
 
 @app.get("/api/orders/{username}")
 async def get_orders(username: str, authorization: Optional[str] = Header(None)):
@@ -1224,8 +1351,19 @@ async def group_chat_ws(websocket: WebSocket, group_id: str, token: Optional[str
                 msg_data = json.loads(raw_data)
                 msg_type = msg_data.get("type", "chat")
                 
-                # If it's signaling/stream data or frame broadcast, forward raw
-                if msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE", "STREAM_FRAME", "VIEWER_PING"]:
+                # If it's signaling/stream data or frame broadcast, apply rate & payload limit
+                if msg_type == "STREAM_FRAME":
+                    if len(raw_data) > 150000: # 150KB limit per frame
+                        continue
+                    last_frame_time = FRAME_RATE_TRACKER.get(room_id, 0)
+                    now_ts = time.time()
+                    if now_ts - last_frame_time < 0.065: # Max ~15 FPS per room to prevent bandwidth exhaustion
+                        continue
+                    FRAME_RATE_TRACKER[room_id] = now_ts
+
+                    msg_data["sender"] = user_payload["username"]
+                    await manager.broadcast_raw(json.dumps(msg_data), room_id)
+                elif msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE", "VIEWER_PING"]:
                     msg_data["sender"] = user_payload["username"]
                     await manager.broadcast_raw(json.dumps(msg_data), room_id)
                 else:

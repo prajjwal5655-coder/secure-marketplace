@@ -4,9 +4,15 @@ __pycache__/
 **/__pycache__/
 *.pyc
 **/*.pyc
+backend/marketplace.db
+backend/.jwt_secret
+*.db
+*.sqlite
+*.sqlite3
 *.db-journal
 *.db-wal
 *.db-shm
 .env
 .env.local
+.env.*
 .DS_Store
