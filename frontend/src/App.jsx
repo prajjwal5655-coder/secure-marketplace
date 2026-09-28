@@ -4,7 +4,9 @@ import {
   ShoppingCart, Tag, PlusCircle, Globe, Wallet, CheckCircle, CheckCircle2,
   AlertTriangle, MessageSquare, Send, X, UserPlus, UserCheck, Terminal,
   MapPin, Phone, CreditCard, QrCode, ArrowRight, Trash2, ChevronLeft, Package,
-  Wifi, WifiOff, Key, RefreshCw, Printer, Coins, Sparkles, Download, FileText
+  Wifi, WifiOff, Key, RefreshCw, Printer, Coins, Sparkles, Download, FileText,
+  Banknote, ToggleLeft, ToggleRight, Bell, History, Check, Clock, ExternalLink,
+  PhoneCall, MessageCircle
 } from 'lucide-react';
 
 async function getDynamicRoomKey(roomId) {
@@ -48,7 +50,6 @@ async function encryptText(plainText, roomId) {
     
     return btoa(String.fromCharCode(...combined));
   } catch (err) {
-    console.error("AES-256-GCM Encryption Error:", err);
     return plainText;
   }
 }
@@ -101,6 +102,7 @@ export default function App() {
   const [authModal, setAuthModal] = useState(null); 
   const [userProfileModal, setUserProfileModal] = useState(null);
   const [activePrivateChat, setActivePrivateChat] = useState(null);
+  const [chatInitialContext, setChatInitialContext] = useState('');
   
   const [user, setUser] = useState(() => {
     const saved = localStorage.getItem('nexus_user');
@@ -109,11 +111,18 @@ export default function App() {
 
   const [cultBalance, setCultBalance] = useState(0.0);
   const [topUpModalOpen, setTopUpModalOpen] = useState(false);
+  const [topUpTab, setTopUpTab] = useState('topup'); // 'topup' | 'history'
   const [topUpAmount, setTopUpAmount] = useState(10);
   const [utrInput, setUtrInput] = useState('');
   const [topUpError, setTopUpError] = useState('');
   const [topUpReceipt, setTopUpReceipt] = useState(null);
+  const [topUpHistory, setTopUpHistory] = useState([]);
   
+  const [vendorOrders, setVendorOrders] = useState([]);
+  const [vendorTab, setVendorTab] = useState('products'); // 'products' | 'orders'
+  const [notifications, setNotifications] = useState([]);
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+
   const [wsConnected, setWsConnected] = useState(false);
   const [cart, setCart] = useState([]);
   const [shippingForm, setShippingForm] = useState({
@@ -143,7 +152,7 @@ export default function App() {
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3500);
+    setTimeout(() => setToastMessage(''), 3800);
   };
 
   const fetchMarketItems = async () => {
@@ -175,6 +184,21 @@ export default function App() {
     }
   };
 
+  const fetchWalletTransactions = async (username, token) => {
+    if (!username || !token) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/wallet/${username}/transactions`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTopUpHistory(data);
+      }
+    } catch (err) {
+      console.warn("Could not fetch transactions:", err);
+    }
+  };
+
   const fetchUserOrders = async (username, token) => {
     if (!username || !token) return;
     try {
@@ -190,6 +214,36 @@ export default function App() {
     }
   };
 
+  const fetchVendorOrders = async (sellerUsername, token) => {
+    if (!sellerUsername || !token) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/vendor/orders/${sellerUsername}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setVendorOrders(data);
+      }
+    } catch (err) {
+      console.warn("Could not fetch vendor orders:", err);
+    }
+  };
+
+  const fetchNotifications = async (username, token) => {
+    if (!username || !token) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/notifications/${username}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNotifications(data);
+      }
+    } catch (err) {
+      console.warn("Could not fetch notifications:", err);
+    }
+  };
+
   useEffect(() => {
     fetchMarketItems();
     const interval = setInterval(fetchMarketItems, 4000);
@@ -201,9 +255,15 @@ export default function App() {
       localStorage.setItem('nexus_user', JSON.stringify(user));
       fetchWalletBalance(user.username, user.token);
       fetchUserOrders(user.username, user.token);
+      fetchNotifications(user.username, user.token);
+      if (user.role === 'seller') {
+        fetchVendorOrders(user.username, user.token);
+      }
     } else {
       localStorage.removeItem('nexus_user');
       setCultBalance(0.0);
+      setVendorOrders([]);
+      setNotifications([]);
     }
   }, [user]);
 
@@ -319,6 +379,10 @@ export default function App() {
   }, [db.globalMessages, db.privateMessages, activeView, activePrivateChat]);
 
   const addToCart = (item) => {
+    if (item.state === 'Out of Stock') {
+      showToast(`Item "${item.title}" is currently Out of Stock.`);
+      return;
+    }
     setCart(prevCart => {
       const existing = prevCart.find(i => i.id === item.id);
       if (existing) {
@@ -345,6 +409,8 @@ export default function App() {
 
   const cartTotalCULT = cart.reduce((sum, item) => sum + (parseFloat(item.price) * item.qty), 0).toFixed(2);
   const cartTotalINR = (parseFloat(cartTotalCULT) * 100).toLocaleString('en-IN');
+  const totalNum = parseFloat(cartTotalCULT);
+  const hasInsufficientBalance = paymentMethod === 'cult_wallet' && cultBalance < totalNum;
 
   const handleAddressSubmit = (e) => {
     e.preventDefault();
@@ -356,16 +422,38 @@ export default function App() {
   };
 
   const processOrderPayment = async () => {
-    const totalNum = parseFloat(cartTotalCULT);
+    if (!user) {
+      setAuthModal('login');
+      return;
+    }
+
+    if (cart.length === 0) {
+      showToast("Your cart is empty.");
+      return;
+    }
 
     if (paymentMethod === 'cult_wallet' && cultBalance < totalNum) {
-      showToast(`Insufficient CULT Balance! You need ${totalNum} CULT. Please top up your wallet.`);
+      showToast(`Insufficient CULT Balance! You have ${cultBalance.toFixed(2)} CULT, but need ${totalNum.toFixed(2)} CULT.`);
       return;
     }
 
     const orderId = 'NEX-' + Math.floor(100000 + Math.random() * 900000);
     const receiptId = 'REC-' + Math.floor(10000000 + Math.random() * 90000000);
     
+    let paymentLabel = 'CULT Virtual Wallet';
+    let statusLabel = 'Escrow Locked / Processing';
+
+    if (paymentMethod === 'offline_cash') {
+      paymentLabel = 'Cash on Delivery / Direct to Vendor';
+      statusLabel = 'Pending Cash on Delivery / Offline Collection';
+    } else if (paymentMethod === 'qr_code') {
+      paymentLabel = 'UPI / Google Pay (Prajjwal Maurya)';
+      statusLabel = 'UPI Payment / Processing';
+    } else if (paymentMethod === 'web3') {
+      paymentLabel = 'Web3 Escrow Lock';
+      statusLabel = 'Web3 Smart Contract Escrow';
+    }
+
     const receiptObj = {
       receiptId: receiptId,
       orderId: orderId,
@@ -373,11 +461,11 @@ export default function App() {
       customerName: shippingForm.fullName,
       customerPhone: shippingForm.phone,
       address: `${shippingForm.address}, ${shippingForm.city} - ${shippingForm.postalCode}`,
-      paymentMethod: paymentMethod === 'cult_wallet' ? 'CULT Virtual Wallet' : paymentMethod === 'qr_code' ? 'UPI / Google Pay (Prajjwal Maurya)' : 'Web3 Escrow',
+      paymentMethod: paymentLabel,
       items: cart.map(i => ({ title: i.title, seller: i.seller, qty: i.qty, priceCULT: i.price, subtotal: (parseFloat(i.price) * i.qty).toFixed(2) })),
       totalCULT: cartTotalCULT,
       totalINR: cartTotalINR,
-      status: 'Escrow Locked & Verified'
+      status: statusLabel
     };
 
     const newOrder = {
@@ -388,7 +476,7 @@ export default function App() {
       shipping: { ...shippingForm },
       paymentMethod: paymentMethod,
       timestamp: new Date().toLocaleString(),
-      status: 'Escrow Locked / Processing',
+      status: statusLabel,
       receipt: receiptObj
     };
 
@@ -409,10 +497,13 @@ export default function App() {
       }
 
       if (paymentMethod === 'cult_wallet') {
-        setCultBalance(prev => prev - totalNum);
+        setCultBalance(prev => Math.max(0, prev - totalNum));
       }
+
+      showToast(`🎉 Order ${orderId} placed successfully! Vendors notified.`);
     } catch (err) {
       console.warn("Could not save order to backend:", err);
+      showToast("Order placed locally. Server sync pending.");
     }
 
     setDb(prev => ({ ...prev, orders: [newOrder, ...prev.orders] }));
@@ -420,6 +511,10 @@ export default function App() {
     setLastReceipt(receiptObj);
     setCart([]);
     setActiveView('order_confirmed');
+    fetchUserOrders(user.username, user.token);
+    if (user.role === 'seller') {
+      fetchVendorOrders(user.username, user.token);
+    }
   };
 
   const handleTopUpSubmit = async (e) => {
@@ -427,8 +522,9 @@ export default function App() {
     setTopUpError('');
 
     if (!user) return;
-    if (!utrInput || utrInput.trim().length !== 12 || !/^\d{12}$/.test(utrInput.strip ? utrInput.strip() : utrInput.trim())) {
-      setTopUpError("Invalid UTR Reference Number. Please enter the exact 12-digit numeric UPI Ref / UTR / RRN from your UPI app receipt.");
+    const cleanUtr = utrInput.trim();
+    if (!cleanUtr || cleanUtr.length !== 12 || !/^\d{12}$/.test(cleanUtr)) {
+      setTopUpError("Invalid UTR Reference Number. Please enter the exact 12-digit numeric UPI Ref / UTR / RRN from your Google Pay receipt.");
       return;
     }
 
@@ -442,7 +538,7 @@ export default function App() {
         body: JSON.stringify({
           username: user.username,
           amount: parseFloat(topUpAmount),
-          utr_ref: utrInput.trim()
+          utr_ref: cleanUtr
         })
       });
 
@@ -457,8 +553,72 @@ export default function App() {
       setTopUpReceipt(data.receipt);
       showToast(`UTR Verified! Credited +${topUpAmount} CULT Coins to your wallet.`);
       setUtrInput('');
+      fetchWalletTransactions(user.username, user.token);
     } catch (err) {
       setTopUpError("Backend verification request failed. Ensure server is online.");
+    }
+  };
+
+  const handleToggleStock = async (itemId) => {
+    if (!user) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/items/${itemId}/toggle-stock`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setItems(prev => prev.map(item => item.id === itemId ? { ...item, state: data.state } : item));
+        showToast(`Product marked as ${data.state}!`);
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Stock update failed.");
+      }
+    } catch (err) {
+      showToast("Network error toggling stock state.");
+    }
+  };
+
+  const handleDeleteItem = async (itemId) => {
+    if (!user) return;
+    if (!window.confirm("Are you sure you want to permanently delete this product from the marketplace?")) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/items/${itemId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      if (res.ok) {
+        setItems(prev => prev.filter(item => item.id !== itemId));
+        showToast("Product deleted successfully from catalog!");
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Failed to delete product.");
+      }
+    } catch (err) {
+      showToast("Network error deleting item.");
+    }
+  };
+
+  const handleUpdateOrderStatus = async (orderId, newStatus) => {
+    if (!user) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/orders/${orderId}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        },
+        body: JSON.stringify({ status: newStatus })
+      });
+      if (res.ok) {
+        setVendorOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+        showToast(`Order #${orderId} status updated to: ${newStatus}`);
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Failed to update status.");
+      }
+    } catch (err) {
+      showToast("Network error updating order status.");
     }
   };
 
@@ -616,18 +776,21 @@ export default function App() {
       });
       if (res.ok) {
         await fetchMarketItems();
+        showToast("New item listed on hostel marketplace!");
       }
     } catch (err) {
       console.warn("Could not post item to backend:", err);
     }
 
     setNewProduct({ title: '', price: '', desc: '' });
-    showToast("New item listed on hostel marketplace!");
   };
 
-  const openPrivateChat = (targetUsername) => {
+  const openPrivateChat = (targetUsername, contextText = '') => {
     setUserProfileModal(null);
     setActivePrivateChat(targetUsername);
+    if (contextText) {
+      setChatInput(contextText);
+    }
     setActiveView('private_chat');
   };
 
@@ -693,12 +856,12 @@ export default function App() {
                     <label className={`border rounded-lg p-3 cursor-pointer transition-all flex flex-col items-center gap-1 ${authForm.role === 'buyer' ? 'bg-cyan-950/40 border-cyan-500' : 'bg-black border-slate-800 hover:border-slate-600'}`}>
                       <input type="radio" name="role" value="buyer" checked={authForm.role === 'buyer'} onChange={handleAuthChange} className="hidden" />
                       <ShoppingCart className={`w-4 h-4 ${authForm.role === 'buyer' ? 'text-cyan-400' : 'text-slate-600'}`} />
-                      <span className={`font-mono text-xs ${authForm.role === 'buyer' ? 'text-cyan-400' : 'text-slate-500'}`}>Acquirer</span>
+                      <span className={`font-mono text-xs ${authForm.role === 'buyer' ? 'text-cyan-400' : 'text-slate-500'}`}>Buyer / Acquirer</span>
                     </label>
                     <label className={`border rounded-lg p-3 cursor-pointer transition-all flex flex-col items-center gap-1 ${authForm.role === 'seller' ? 'bg-emerald-950/40 border-emerald-500' : 'bg-black border-slate-800 hover:border-slate-600'}`}>
                       <input type="radio" name="role" value="seller" checked={authForm.role === 'seller'} onChange={handleAuthChange} className="hidden" />
                       <Tag className={`w-4 h-4 ${authForm.role === 'seller' ? 'text-emerald-400' : 'text-slate-600'}`} />
-                      <span className={`font-mono text-xs ${authForm.role === 'seller' ? 'text-emerald-400' : 'text-slate-500'}`}>Vendor</span>
+                      <span className={`font-mono text-xs ${authForm.role === 'seller' ? 'text-emerald-400' : 'text-slate-500'}`}>Vendor / Seller</span>
                     </label>
                   </div>
                 </div>
@@ -726,128 +889,207 @@ export default function App() {
     if (!topUpModalOpen) return null;
 
     const inrValue = (topUpAmount * 100).toLocaleString('en-IN');
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=upi://pay?pa=prajjwal5655@okicici%26pn=Prajjwal%20Maurya%26am=${topUpAmount * 100}%26cu=INR`;
 
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4" onClick={(e) => { if(e.target === e.currentTarget) { setTopUpModalOpen(false); setTopUpReceipt(null); } }}>
-        <div className="bg-slate-950 border border-amber-500/40 rounded-xl w-full max-w-md overflow-hidden shadow-2xl relative">
+        <div className="bg-slate-950 border border-amber-500/40 rounded-xl w-full max-w-lg overflow-hidden shadow-2xl relative max-h-[92vh] flex flex-col">
           
-          <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+          {/* Header */}
+          <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 shrink-0">
             <div className="flex items-center gap-2">
               <Coins className="text-amber-400 w-5 h-5" />
-              <h2 className="text-lg font-mono font-bold text-white tracking-widest uppercase">
-                Buy CULT Coins
+              <h2 className="text-base font-mono font-bold text-white tracking-widest uppercase">
+                Buy CULT Coins (UPI QR Verification)
               </h2>
             </div>
             <button onClick={() => { setTopUpModalOpen(false); setTopUpReceipt(null); }} className="text-slate-500 hover:text-white"><X className="w-5 h-5"/></button>
           </div>
 
-          {topUpReceipt ? (
-            <div className="p-6 space-y-5 font-mono">
-              <div className="bg-emerald-950/30 border border-emerald-800 rounded-xl p-4 text-center space-y-2">
-                <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
-                <h3 className="text-white font-bold text-base uppercase">Payment Verified & Credited</h3>
-                <p className="text-emerald-400 text-xs">+{topUpReceipt.cultCredited} CULT Coins added to @{topUpReceipt.username}</p>
-              </div>
+          {/* Sub Navigation Tabs */}
+          <div className="flex border-b border-slate-800 bg-black text-xs font-mono shrink-0">
+            <button 
+              onClick={() => { setTopUpTab('topup'); setTopUpReceipt(null); }}
+              className={`flex-1 py-2.5 text-center transition-colors flex items-center justify-center gap-1.5 ${topUpTab === 'topup' ? 'text-amber-400 border-b-2 border-amber-400 font-bold bg-amber-950/10' : 'text-slate-500 hover:text-white'}`}
+            >
+              <QrCode className="w-3.5 h-3.5" /> Scan QR & Verify UTR
+            </button>
+            <button 
+              onClick={() => { setTopUpTab('history'); if(user) fetchWalletTransactions(user.username, user.token); }}
+              className={`flex-1 py-2.5 text-center transition-colors flex items-center justify-center gap-1.5 ${topUpTab === 'history' ? 'text-amber-400 border-b-2 border-amber-400 font-bold bg-amber-950/10' : 'text-slate-500 hover:text-white'}`}
+            >
+              <History className="w-3.5 h-3.5" /> UTR History & Logs
+            </button>
+          </div>
 
-              <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2 text-xs">
-                <div className="flex justify-between text-slate-400">
-                  <span>Top-Up Serial:</span>
-                  <span className="text-cyan-400 font-bold">{topUpReceipt.receiptId}</span>
+          <div className="overflow-y-auto p-5 flex-1 space-y-4">
+            {topUpTab === 'history' ? (
+              <div className="space-y-3 font-mono">
+                <div className="flex justify-between items-center text-xs text-slate-400 border-b border-slate-800 pb-2">
+                  <span>Verified UTR Recharges</span>
+                  <span className="text-amber-400 font-bold">{cultBalance.toFixed(2)} CULT Available</span>
                 </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>12-Digit UTR:</span>
-                  <span className="text-amber-400 font-bold">{topUpReceipt.utrRef}</span>
+
+                {topUpHistory.length === 0 ? (
+                  <div className="text-center py-8 text-slate-600 text-xs">
+                    No verified UTR recharges found.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {topUpHistory.map((tx) => (
+                      <div key={tx.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs flex justify-between items-center">
+                        <div className="space-y-0.5">
+                          <div className="text-white font-bold flex items-center gap-1.5">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                            UTR: <span className="text-cyan-400">{tx.utrRef}</span>
+                          </div>
+                          <div className="text-slate-500 text-[10px]">{tx.timestamp}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-amber-400 font-bold">+{tx.cultAmount} CULT</div>
+                          <div className="text-slate-500 text-[10px]">₹{tx.inrAmount.toLocaleString('en-IN')} INR</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : topUpReceipt ? (
+              <div className="space-y-4 font-mono">
+                <div className="bg-emerald-950/30 border border-emerald-800 rounded-xl p-4 text-center space-y-2">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+                  <h3 className="text-white font-bold text-base uppercase">Payment Verified & Credited</h3>
+                  <p className="text-emerald-400 text-xs">+{topUpReceipt.cultCredited} CULT Coins added to @{topUpReceipt.username}</p>
                 </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>Amount Paid:</span>
-                  <span className="text-white font-bold">₹{topUpReceipt.inrPaid.toLocaleString('en-IN')} INR</span>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2 text-xs">
+                  <div className="flex justify-between text-slate-400">
+                    <span>Receipt Serial:</span>
+                    <span className="text-cyan-400 font-bold">{topUpReceipt.receiptId}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>12-Digit UTR Number:</span>
+                    <span className="text-amber-400 font-bold">{topUpReceipt.utrRef}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Amount Paid:</span>
+                    <span className="text-white font-bold">₹{topUpReceipt.inrPaid.toLocaleString('en-IN')} INR</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Recipient:</span>
+                    <span className="text-white">{topUpReceipt.recipientName} ({topUpReceipt.recipientUPI})</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Timestamp:</span>
+                    <span className="text-slate-300">{topUpReceipt.date}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>Recipient:</span>
-                  <span className="text-white">{topUpReceipt.recipientName} ({topUpReceipt.recipientUPI})</span>
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>Timestamp:</span>
-                  <span className="text-slate-300">{topUpReceipt.date}</span>
+
+                <div className="flex gap-2">
+                  <button onClick={() => window.print()} className="flex-1 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest flex items-center justify-center gap-1">
+                    <Printer className="w-3.5 h-3.5"/> Print Receipt
+                  </button>
+                  <button onClick={() => { setTopUpModalOpen(false); setTopUpReceipt(null); }} className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest">
+                    Done
+                  </button>
                 </div>
               </div>
+            ) : (
+              <form onSubmit={handleTopUpSubmit} className="space-y-4">
+                <div className="bg-amber-950/20 border border-amber-800/50 rounded-lg p-3 text-xs font-mono text-amber-300 flex items-center justify-between">
+                  <span>Rate: 1 CULT = ₹100 INR</span>
+                  <Sparkles className="w-4 h-4 text-amber-400"/>
+                </div>
 
-              <div className="flex gap-2">
-                <button onClick={() => window.print()} className="flex-1 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest flex items-center justify-center gap-1">
-                  <Printer className="w-3.5 h-3.5"/> Print Receipt
+                {topUpError && (
+                  <div className="bg-rose-950/50 border border-rose-900 text-rose-400 p-3 rounded-lg text-xs font-mono flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0"/> {topUpError}
+                  </div>
+                )}
+
+                {/* Amount selection */}
+                <div>
+                  <label className="text-[10px] font-mono text-slate-400 uppercase tracking-widest block mb-1">Select CULT Coin Package</label>
+                  <div className="grid grid-cols-4 gap-2 mb-2">
+                    {[1, 5, 10, 25].map(amt => (
+                      <button 
+                        key={amt} 
+                        type="button" 
+                        onClick={() => setTopUpAmount(amt)} 
+                        className={`py-2 rounded-lg font-mono text-xs border transition-all text-center ${topUpAmount === amt ? 'bg-amber-500 text-black font-bold border-amber-400 shadow-md' : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'}`}
+                      >
+                        <div>+{amt} CULT</div>
+                        <div className="text-[9px] opacity-70">₹{amt * 100}</div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5">
+                    <span className="text-slate-500 font-mono text-xs">Custom CULT:</span>
+                    <input 
+                      type="number" 
+                      min="1" 
+                      value={topUpAmount} 
+                      onChange={e => setTopUpAmount(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full bg-transparent text-white font-mono text-sm focus:outline-none"
+                    />
+                    <span className="text-amber-400 font-mono text-xs font-bold shrink-0">= ₹{inrValue} INR</span>
+                  </div>
+                </div>
+
+                {/* Google Pay UPI QR Container */}
+                <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 text-center space-y-3">
+                  <div className="text-xs font-mono text-slate-300 flex items-center justify-center gap-1.5">
+                    <QrCode className="w-4 h-4 text-cyan-400" />
+                    <span>Scan with <strong className="text-white">Google Pay / PhonePe / Paytm</strong> to Pay <strong className="text-amber-400">₹{inrValue} INR</strong></span>
+                  </div>
+
+                  {/* QR Image Display */}
+                  <div className="w-48 h-48 bg-white p-2 mx-auto rounded-xl border-2 border-cyan-500/70 shadow-2xl flex items-center justify-center relative overflow-hidden group">
+                    <img 
+                      src="/gpay_qr.png" 
+                      alt="Google Pay UPI QR Code" 
+                      className="w-full h-full object-contain"
+                    />
+                  </div>
+
+                  <div className="text-[11px] font-mono text-slate-400 bg-black/60 p-2.5 rounded-lg border border-slate-800">
+                    <div>UPI Recipient: <strong className="text-white">Prajjwal Maurya</strong></div>
+                    <code className="text-cyan-400 font-bold tracking-wider">prajjwal5655@okicici</code>
+                  </div>
+                </div>
+
+                {/* 12-Digit UTR Input */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-mono text-amber-400 uppercase tracking-widest font-bold flex items-center gap-1">
+                      <Key className="w-3.5 h-3.5" /> 12-Digit UPI Ref / UTR Number *
+                    </label>
+                    <span className="text-[9px] font-mono text-slate-500">{utrInput.length}/12 Digits</span>
+                  </div>
+                  <input 
+                    required
+                    type="text" 
+                    maxLength="12"
+                    placeholder="e.g. 423891028374" 
+                    value={utrInput} 
+                    onChange={e => { setUtrInput(e.target.value.replace(/\D/g, '')); setTopUpError(''); }}
+                    className="w-full bg-black border border-amber-500/60 rounded-lg px-4 py-2.5 text-amber-300 font-mono text-sm tracking-widest focus:border-amber-400 focus:outline-none shadow-inner"
+                  />
+                  <span className="text-[9px] text-slate-500 font-mono block">
+                    💡 Find the 12-digit numeric UPI Reference / UTR / RRN in your Google Pay payment details after transferring ₹{inrValue}.
+                  </span>
+                </div>
+
+                <button 
+                  type="submit" 
+                  disabled={utrInput.length !== 12}
+                  className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-mono font-bold py-3 rounded-lg text-xs tracking-widest uppercase transition-all shadow-lg"
+                >
+                  Verify UTR & Credit +{topUpAmount} CULT
                 </button>
-                <button onClick={() => { setTopUpModalOpen(false); setTopUpReceipt(null); }} className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest">
-                  Done
-                </button>
-              </div>
-            </div>
-          ) : (
-            <form onSubmit={handleTopUpSubmit} className="p-6 space-y-4">
-              <div className="bg-amber-950/20 border border-amber-800/50 rounded-lg p-3 text-xs font-mono text-amber-300 flex items-center justify-between">
-                <span>Rate: 1 CULT = $1 USD = ₹100 INR</span>
-                <Sparkles className="w-4 h-4 text-amber-400"/>
-              </div>
-
-              {topUpError && (
-                <div className="bg-rose-950/50 border border-rose-900 text-rose-400 p-3 rounded-lg text-xs font-mono flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0"/> {topUpError}
-                </div>
-              )}
-
-              <div>
-                <label className="text-[10px] font-mono text-slate-400 uppercase tracking-widest block mb-1">Select CULT Amount</label>
-                <div className="grid grid-cols-4 gap-2 mb-3">
-                  {[10, 25, 50, 100].map(amt => (
-                    <button key={amt} type="button" onClick={() => setTopUpAmount(amt)} className={`py-2 rounded-lg font-mono text-xs border transition-all ${topUpAmount === amt ? 'bg-amber-500 text-black font-bold border-amber-400' : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'}`}>
-                      +{amt} CULT
-                    </button>
-                  ))}
-                </div>
-
-                <input 
-                  type="number" 
-                  min="1" 
-                  value={topUpAmount} 
-                  onChange={e => setTopUpAmount(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full bg-black border border-slate-800 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:border-amber-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-3">
-                <div className="text-xs font-mono text-slate-400">
-                  Scan to pay <strong className="text-amber-400 font-bold">₹{inrValue} INR</strong> via UPI
-                </div>
-
-                <div className="w-40 h-40 bg-white p-2 mx-auto rounded-lg border-2 border-amber-500/60 shadow-xl flex items-center justify-center">
-                  <img src={qrUrl} alt="Prajjwal Maurya UPI QR Code" className="w-full h-full object-contain" />
-                </div>
-
-                <div className="text-[11px] font-mono text-slate-400">
-                  Recipient: <strong className="text-white">Prajjwal Maurya</strong><br/>
-                  <code className="text-amber-400">prajjwal5655@okicici</code>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-[10px] font-mono text-amber-400 uppercase tracking-widest block mb-1">Enter 12-Digit UPI Ref / UTR Number *</label>
-                <input 
-                  required
-                  type="text" 
-                  maxLength="12"
-                  placeholder="e.g. 423987123901" 
-                  value={utrInput} 
-                  onChange={e => { setUtrInput(e.target.value.replace(/\D/g, '')); setTopUpError(''); }}
-                  className="w-full bg-black border border-amber-500/50 rounded-lg px-4 py-2 text-amber-300 font-mono text-sm tracking-widest focus:border-amber-400 focus:outline-none"
-                />
-                <span className="text-[9px] text-slate-500 font-mono block mt-1">Must be exactly 12 numeric digits from your GPay / PhonePe / Paytm receipt.</span>
-              </div>
-
-              <button type="submit" className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono font-bold py-3 rounded-lg text-xs tracking-widest uppercase transition-all">
-                Verify UTR & Credit +{topUpAmount} CULT
-              </button>
-            </form>
-          )}
+              </form>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -889,6 +1131,55 @@ export default function App() {
     );
   };
 
+  const renderNotificationsModal = () => {
+    if (!showNotificationsModal) return null;
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={(e) => { if(e.target === e.currentTarget) setShowNotificationsModal(false); }}>
+        <div className="bg-slate-950 border border-slate-800 rounded-xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[80vh]">
+          <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50 shrink-0">
+            <div className="flex items-center gap-2">
+              <Bell className="text-cyan-400 w-5 h-5" />
+              <h2 className="text-sm font-mono font-bold text-white tracking-widest uppercase">
+                Activity & Order Alerts ({notifications.length})
+              </h2>
+            </div>
+            <button onClick={() => setShowNotificationsModal(false)} className="text-slate-500 hover:text-white"><X className="w-5 h-5"/></button>
+          </div>
+
+          <div className="p-4 overflow-y-auto space-y-3 flex-1 font-mono text-xs">
+            {notifications.length === 0 ? (
+              <div className="text-center py-10 text-slate-600">
+                No notifications right now.
+              </div>
+            ) : (
+              notifications.map((notif) => (
+                <div key={notif.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3 space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <span className="text-cyan-400 font-bold">{notif.title}</span>
+                    <span className="text-[10px] text-slate-500">{notif.timestamp}</span>
+                  </div>
+                  <p className="text-slate-300 text-xs leading-relaxed">{notif.message}</p>
+                  <div className="pt-1 flex gap-2">
+                    <button 
+                      onClick={() => {
+                        setShowNotificationsModal(false);
+                        openPrivateChat(notif.sender, `Hello @${notif.sender}, regarding ${notif.title}: `);
+                      }}
+                      className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-3 py-1 rounded text-[10px] flex items-center gap-1 font-bold"
+                    >
+                      <MessageSquare className="w-3 h-3" /> Chat with @{notif.sender}
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderChatInterface = (type) => {
     const isGlobal = type === 'global';
     const chatRoomId = isGlobal ? 'global' : getPrivateChatKey(user?.username, activePrivateChat);
@@ -904,13 +1195,28 @@ export default function App() {
           <div className="flex items-center gap-3">
             {isGlobal ? <Globe className="w-5 h-5 text-cyan-500" /> : <Lock className="w-5 h-5 text-emerald-500" />}
             <div>
-              <h3 className="text-white font-mono font-bold tracking-wide">{chatTitle}</h3>
-              <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest flex items-center gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-white font-mono font-bold tracking-wide">{chatTitle}</h3>
+                {!isGlobal && (
+                  <span className="text-[10px] bg-emerald-950/50 text-emerald-400 border border-emerald-900 px-2 py-0.5 rounded font-mono">
+                    Direct P2P
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest flex items-center gap-2 mt-0.5">
                 {wsConnected ? <span className="text-emerald-400 flex items-center gap-1"><Wifi className="w-3 h-3"/> Connected</span> : <span className="text-rose-400 flex items-center gap-1"><WifiOff className="w-3 h-3"/> Connecting...</span>}
-                | AES-256-GCM Encrypted
+                | AES-256-GCM End-to-End Encrypted
               </p>
             </div>
           </div>
+          {!isGlobal && (
+            <button 
+              onClick={() => setActiveView('marketplace')}
+              className="text-xs font-mono text-slate-500 hover:text-white flex items-center gap-1 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" /> Market
+            </button>
+          )}
         </div>
 
         <div 
@@ -918,14 +1224,28 @@ export default function App() {
           className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-950 relative"
         >
           {messages.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center text-slate-700 font-mono text-xs uppercase tracking-widest">
-              No chat transmissions in room.
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-700 font-mono text-xs uppercase tracking-widest gap-2">
+              <MessageCircle className="w-8 h-8 opacity-40" />
+              <span>No chat transmissions in room. Send a message to begin.</span>
             </div>
           )}
           {messages.map((msg, idx) => {
             const isMe = msg.sender === user?.username;
+            const isSystem = msg.sender === 'SYSTEM_ORDER_BOT';
             const cacheKey = `${chatRoomId}_${msg.text}`;
-            const plainText = decryptedCache[cacheKey] || msg.text;
+            const plainText = isSystem ? msg.text : (decryptedCache[cacheKey] || msg.text);
+
+            if (isSystem) {
+              return (
+                <div key={idx} className="bg-slate-900/90 border border-cyan-500/40 rounded-xl p-3 max-w-lg mx-auto text-xs font-mono shadow-md">
+                  <div className="flex items-center gap-1.5 text-cyan-400 font-bold mb-1 border-b border-slate-800 pb-1">
+                    <Package className="w-4 h-4" /> System Automated Order Alert
+                  </div>
+                  <pre className="text-slate-200 whitespace-pre-wrap font-sans text-xs leading-relaxed">{plainText}</pre>
+                  <span className="text-[9px] text-slate-500 block text-right mt-1">{msg.timestamp}</span>
+                </div>
+              );
+            }
 
             return (
               <div key={idx} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
@@ -933,7 +1253,7 @@ export default function App() {
                   {!isMe && (
                     <span 
                       onClick={() => setUserProfileModal(msg.sender)}
-                      className="text-[10px] font-mono text-cyan-600 mb-1 block cursor-pointer hover:text-cyan-400 ml-1"
+                      className="text-[10px] font-mono text-cyan-500 mb-1 block cursor-pointer hover:text-cyan-300 ml-1 font-bold"
                     >
                       @{msg.sender}
                     </span>
@@ -956,15 +1276,15 @@ export default function App() {
               type="text" 
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder="Type encrypted message..." 
+              placeholder={isGlobal ? "Type global message..." : `Message @${activePrivateChat}...`} 
               className="flex-1 bg-black border border-slate-700 rounded-lg px-4 py-3 text-white focus:border-cyan-500 focus:outline-none font-mono text-sm placeholder:text-slate-700"
             />
             <button 
               type="submit" 
               disabled={!chatInput.trim()}
-              className="bg-cyan-950 hover:bg-cyan-900 disabled:opacity-50 disabled:cursor-not-allowed text-cyan-400 border border-cyan-800 p-3 rounded-lg transition-colors flex items-center justify-center"
+              className="bg-cyan-950 hover:bg-cyan-900 disabled:opacity-50 disabled:cursor-not-allowed text-cyan-400 border border-cyan-800 px-5 rounded-lg transition-colors flex items-center justify-center font-mono text-xs uppercase tracking-wider font-bold gap-1"
             >
-              <Send className="w-5 h-5" />
+              <Send className="w-4 h-4" /> Send
             </button>
           </form>
         </div>
@@ -977,11 +1297,12 @@ export default function App() {
       {renderAuthModal()}
       {renderTopUpModal()}
       {renderUserProfileModal()}
+      {renderNotificationsModal()}
 
       {toastMessage && (
-        <div className="fixed bottom-5 right-5 z-50 bg-emerald-950 border border-emerald-800 text-emerald-300 px-4 py-3 rounded-lg font-mono text-sm shadow-xl flex items-center gap-2">
-          <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-          {toastMessage}
+        <div className="fixed bottom-5 right-5 z-50 bg-slate-900 border border-cyan-500 text-cyan-200 px-4 py-3 rounded-lg font-mono text-sm shadow-2xl flex items-center gap-2">
+          <CheckCircle2 className="w-5 h-5 text-cyan-400 shrink-0" />
+          <span>{toastMessage}</span>
         </div>
       )}
 
@@ -994,26 +1315,26 @@ export default function App() {
             </div>
             
             <div className="hidden md:flex gap-6 font-mono text-sm uppercase tracking-wider">
-                <button onClick={() => setActiveView('marketplace')} className={`h-16 px-2 flex items-center transition-colors ${activeView === 'marketplace' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-slate-500 hover:text-white'}`}>Market</button>
+                <button onClick={() => setActiveView('marketplace')} className={`h-16 px-2 flex items-center transition-colors ${activeView === 'marketplace' ? 'text-cyan-400 border-b-2 border-cyan-400 font-bold' : 'text-slate-500 hover:text-white'}`}>Market</button>
                 <button 
                   onClick={() => user ? setActiveView('global_chat') : setAuthModal('login')} 
-                  className={`h-16 px-2 flex items-center gap-2 transition-colors ${activeView === 'global_chat' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-slate-500 hover:text-white'}`}
+                  className={`h-16 px-2 flex items-center gap-2 transition-colors ${activeView === 'global_chat' ? 'text-cyan-400 border-b-2 border-cyan-400 font-bold' : 'text-slate-500 hover:text-white'}`}
                 >
                   <Globe className="w-4 h-4"/> Global Chat
                 </button>
                 {user && (
-                  <button onClick={() => setActiveView('my_orders')} className={`h-16 px-2 flex items-center gap-2 transition-colors ${activeView === 'my_orders' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-slate-500 hover:text-white'}`}>
-                    <Package className="w-4 h-4"/> Orders
+                  <button onClick={() => setActiveView('my_orders')} className={`h-16 px-2 flex items-center gap-2 transition-colors ${activeView === 'my_orders' ? 'text-cyan-400 border-b-2 border-cyan-400 font-bold' : 'text-slate-500 hover:text-white'}`}>
+                    <Package className="w-4 h-4"/> My Orders ({db.orders.length})
                   </button>
                 )}
                 {user?.role === 'seller' && (
-                  <button onClick={() => setActiveView('dashboard')} className={`h-16 px-2 flex items-center gap-2 transition-colors ${activeView === 'dashboard' ? 'text-emerald-400 border-b-2 border-emerald-400' : 'text-slate-500 hover:text-white'}`}>
-                    <Terminal className="w-4 h-4"/> Vendor Console
+                  <button onClick={() => { setActiveView('dashboard'); fetchVendorOrders(user.username, user.token); }} className={`h-16 px-2 flex items-center gap-2 transition-colors ${activeView === 'dashboard' ? 'text-emerald-400 border-b-2 border-emerald-400 font-bold' : 'text-slate-500 hover:text-white'}`}>
+                    <Terminal className="w-4 h-4"/> Vendor Console {vendorOrders.length > 0 && <span className="bg-emerald-500 text-black text-[10px] px-1.5 py-0.2 rounded-full font-bold">{vendorOrders.length}</span>}
                   </button>
                 )}
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               {/* CULT Wallet Widget */}
               {user && (
                 <div className="flex items-center bg-slate-900 border border-amber-500/40 rounded-lg px-3 py-1.5 font-mono text-xs gap-2">
@@ -1023,14 +1344,31 @@ export default function App() {
                     <span className="text-[10px] text-slate-500 block">≈ ₹{(cultBalance * 100).toLocaleString('en-IN')}</span>
                   </div>
                   <button 
-                    onClick={() => setTopUpModalOpen(true)}
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] uppercase px-2 py-1 rounded transition-colors ml-1"
+                    onClick={() => { setTopUpModalOpen(true); setTopUpTab('topup'); }}
+                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] uppercase px-2.5 py-1 rounded transition-colors ml-1"
                   >
-                    + Buy CULT
+                    + Buy
                   </button>
                 </div>
               )}
 
+              {/* Notifications bell */}
+              {user && (
+                <button 
+                  onClick={() => setShowNotificationsModal(true)} 
+                  className="relative p-2 text-slate-400 hover:text-white transition-colors"
+                  title="Notifications"
+                >
+                  <Bell className="w-5 h-5" />
+                  {notifications.length > 0 && (
+                    <span className="absolute top-1 right-1 bg-amber-500 text-black font-mono font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
+                      {notifications.length}
+                    </span>
+                  )}
+                </button>
+              )}
+
+              {/* Cart button */}
               <button onClick={() => setActiveView('cart')} className="relative p-2 text-slate-400 hover:text-white transition-colors">
                 <ShoppingCart className="w-5 h-5" />
                 {cart.length > 0 && (
@@ -1041,19 +1379,19 @@ export default function App() {
               </button>
 
               {user ? (
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
                   <div className="text-right hidden sm:block cursor-pointer group" onClick={() => setUserProfileModal(user.username)}>
                     <div className="font-mono font-bold text-white flex items-center gap-1 justify-end group-hover:text-cyan-400 transition-colors">
                       @{user.username}
                     </div>
-                    <div className="text-slate-600 font-mono text-[10px] uppercase tracking-widest">{user.role}</div>
+                    <div className="text-slate-500 font-mono text-[10px] uppercase tracking-widest">{user.role}</div>
                   </div>
                   <button onClick={logout} className="text-[10px] uppercase tracking-widest font-mono text-slate-500 hover:text-rose-400 transition-colors border border-transparent hover:border-rose-900 px-2 py-1 rounded">Logout</button>
                 </div>
               ) : (
-                <div className="flex gap-3">
-                  <button onClick={() => setAuthModal('login')} className="px-4 py-2 font-mono text-xs uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Auth</button>
-                  <button onClick={() => setAuthModal('register')} className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-4 py-2 rounded-lg font-mono text-xs uppercase tracking-widest transition-all">Register</button>
+                <div className="flex gap-2">
+                  <button onClick={() => setAuthModal('login')} className="px-3 py-1.5 font-mono text-xs uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Login</button>
+                  <button onClick={() => setAuthModal('register')} className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-3 py-1.5 rounded-lg font-mono text-xs uppercase tracking-widest transition-all">Register</button>
                 </div>
               )}
             </div>
@@ -1068,33 +1406,62 @@ export default function App() {
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-slate-800 pb-4 gap-4">
                     <div>
                       <h2 className="text-3xl font-bold text-white tracking-tight font-mono uppercase">Secure Marketplace</h2>
-                      <p className="text-slate-500 font-mono text-sm mt-1 uppercase tracking-widest">Hostel network P2P commerce with CULT escrow.</p>
+                      <p className="text-slate-500 font-mono text-sm mt-1 uppercase tracking-widest">Hostel P2P Commerce with Escrow & Direct Cash on Delivery.</p>
                     </div>
-                    <div className="flex items-center gap-2 text-[10px] font-mono text-amber-400 bg-amber-950/20 px-3 py-1.5 rounded border border-amber-900/50 uppercase tracking-widest">
-                      <Coins className="w-3.5 h-3.5" /> 1 CULT = $1 USD = ₹100 INR
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2 text-[10px] font-mono text-amber-400 bg-amber-950/20 px-3 py-1.5 rounded border border-amber-900/50 uppercase tracking-widest">
+                        <Coins className="w-3.5 h-3.5" /> 1 CULT = ₹100 INR
+                      </div>
+                      {user && (
+                        <button 
+                          onClick={() => { setTopUpModalOpen(true); setTopUpTab('topup'); }}
+                          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-xs font-bold px-3 py-1.5 rounded uppercase tracking-wider flex items-center gap-1"
+                        >
+                          <Coins className="w-3.5 h-3.5" /> Top Up Wallet
+                        </button>
+                      )}
                     </div>
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {items.map(item => (
-                        <div key={item.id} className="bg-black border border-slate-800 rounded-xl p-5 shadow-lg flex flex-col hover:border-slate-600 transition-colors group relative overflow-hidden">
-                            <div className="absolute top-0 left-0 w-1 h-full bg-slate-800 group-hover:bg-cyan-500 transition-colors"></div>
+                    {items.map(item => {
+                      const isOutOfStock = item.state === 'Out of Stock';
+
+                      return (
+                        <div key={item.id} className={`bg-black border ${isOutOfStock ? 'border-rose-900/40 opacity-80' : 'border-slate-800 hover:border-slate-600'} rounded-xl p-5 shadow-lg flex flex-col transition-colors group relative overflow-hidden`}>
+                            <div className={`absolute top-0 left-0 w-1 h-full ${isOutOfStock ? 'bg-rose-600' : 'bg-slate-800 group-hover:bg-cyan-500'} transition-colors`}></div>
                             
-                            <div className="flex justify-between items-start mb-4 pl-3">
+                            <div className="flex justify-between items-start mb-3 pl-3">
                               <h3 className="text-lg font-bold text-white leading-tight font-mono">{item.title}</h3>
+                              {isOutOfStock && (
+                                <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-rose-950 text-rose-400 border border-rose-800 px-2 py-0.5 rounded shrink-0">
+                                  Out of Stock
+                                </span>
+                              )}
                             </div>
                             
                             <p className="text-sm text-slate-400 mb-6 flex-1 pl-3 font-mono leading-relaxed">{item.desc}</p>
                             
-                            <div className="flex items-center justify-between mb-6 bg-slate-950 p-3 rounded-lg border border-slate-800 ml-3">
+                            <div className="flex items-center justify-between mb-4 bg-slate-950 p-3 rounded-lg border border-slate-800 ml-3">
                                 <div className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">
                                   Vendor<br/>
-                                  <button onClick={() => setUserProfileModal(item.seller)} className="text-cyan-500 hover:text-cyan-300 transition-colors mt-1 font-bold">
-                                    @{item.seller}
-                                  </button>
+                                  <div className="flex items-center gap-1 mt-0.5">
+                                    <button onClick={() => setUserProfileModal(item.seller)} className="text-cyan-500 hover:text-cyan-300 transition-colors font-bold">
+                                      @{item.seller}
+                                    </button>
+                                    {user && user.username !== item.seller && (
+                                      <button 
+                                        onClick={() => openPrivateChat(item.seller, `Hi @${item.seller}, I have a question about "${item.title}".`)}
+                                        className="text-slate-500 hover:text-cyan-400 p-1"
+                                        title={`Chat with @${item.seller}`}
+                                      >
+                                        <MessageSquare className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                                 <div className="text-right">
-                                  <span className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Cost</span><br/>
+                                  <span className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Price</span><br/>
                                   <span className="text-lg font-bold text-amber-400 font-mono">{item.price} <span className="text-xs text-amber-500">{item.currency || 'CULT'}</span></span>
                                   <span className="text-[10px] text-slate-500 block font-mono">≈ ₹{(parseFloat(item.price) * 100).toLocaleString('en-IN')}</span>
                                 </div>
@@ -1102,13 +1469,16 @@ export default function App() {
                             
                             <div className="mt-auto pl-3 grid grid-cols-2 gap-2">
                                 <button 
+                                    disabled={isOutOfStock}
                                     onClick={() => addToCart(item)}
-                                    className="bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 py-3 rounded-lg font-mono text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1"
+                                    className={`py-3 rounded-lg font-mono text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1 ${isOutOfStock ? 'bg-slate-950 text-slate-600 border border-slate-900 cursor-not-allowed' : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700'}`}
                                 >
                                     <ShoppingCart className="w-3.5 h-3.5"/> Cart
                                 </button>
                                 <button 
+                                    disabled={isOutOfStock}
                                     onClick={() => {
+                                      if (isOutOfStock) return;
                                       addToCart(item);
                                       if (!user) {
                                         setAuthModal('login');
@@ -1116,13 +1486,14 @@ export default function App() {
                                         setActiveView('cart');
                                       }
                                     }}
-                                    className="bg-amber-950 hover:bg-amber-900 text-amber-400 border border-amber-800 py-3 rounded-lg font-mono text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1 font-bold"
+                                    className={`py-3 rounded-lg font-mono text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1 font-bold ${isOutOfStock ? 'bg-slate-950 text-slate-600 border border-slate-900 cursor-not-allowed' : 'bg-amber-950 hover:bg-amber-900 text-amber-400 border border-amber-800'}`}
                                 >
-                                    <Lock className="w-3.5 h-3.5"/> Buy Now
+                                    {isOutOfStock ? 'Unavailable' : <><Lock className="w-3.5 h-3.5"/> Buy Now</>}
                                 </button>
                             </div>
                         </div>
-                    ))}
+                      );
+                    })}
                 </div>
             </div>
         )}
@@ -1169,7 +1540,7 @@ export default function App() {
 
                 <div className="border-t border-slate-800 pt-6 flex justify-between items-center">
                   <div>
-                    <span className="text-slate-500 font-mono text-xs uppercase tracking-widest block">Total Escrow Value</span>
+                    <span className="text-slate-500 font-mono text-xs uppercase tracking-widest block">Cart Total Value</span>
                     <span className="text-2xl font-mono font-bold text-amber-400">{cartTotalCULT} CULT</span>
                     <span className="text-xs font-mono text-slate-400 block">≈ ₹{cartTotalINR} INR</span>
                   </div>
@@ -1207,7 +1578,7 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block mb-1">Full Name *</label>
-                    <input required type="text" value={shippingForm.fullName} onChange={e => setShippingForm({...shippingForm, fullName: e.target.value})} placeholder="Hostel Resident Name" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:border-cyan-500 focus:outline-none" />
+                    <input required type="text" value={shippingForm.fullName} onChange={e => setShippingForm({...shippingForm, fullName: e.target.value})} placeholder="Resident / Buyer Name" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:border-cyan-500 focus:outline-none" />
                   </div>
                   <div>
                     <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block mb-1">Phone Number *</label>
@@ -1216,8 +1587,8 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block mb-1">Hostel Block & Room / Delivery Address *</label>
-                  <input required type="text" value={shippingForm.address} onChange={e => setShippingForm({...shippingForm, address: e.target.value})} placeholder="Room 302, Block B, Hostel Campus" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:border-cyan-500 focus:outline-none" />
+                  <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block mb-1">Hostel Room & Block / Address *</label>
+                  <input required type="text" value={shippingForm.address} onChange={e => setShippingForm({...shippingForm, address: e.target.value})} placeholder="Room 204, Boys Hostel Block 2, Campus" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white font-mono text-sm focus:border-cyan-500 focus:outline-none" />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -1251,86 +1622,135 @@ export default function App() {
                 <CreditCard className="text-cyan-400" /> Select Payment Rail
               </h3>
 
-              <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-3">
-                  <div 
-                    onClick={() => setPaymentMethod('cult_wallet')}
-                    className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1.5 text-center ${paymentMethod === 'cult_wallet' ? 'bg-amber-950/40 border-amber-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
-                  >
-                    <Coins className={`w-5 h-5 ${paymentMethod === 'cult_wallet' ? 'text-amber-400' : 'text-slate-500'}`} />
-                    <div>
-                      <div className="font-mono text-xs font-bold text-white">CULT Wallet</div>
-                      <div className="font-mono text-[9px] text-amber-400">{cultBalance.toFixed(1)} CULT avail.</div>
-                    </div>
-                  </div>
+              {/* Payment Methods Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                
+                {/* 1. Cult Wallet */}
+                <div 
+                  onClick={() => setPaymentMethod('cult_wallet')}
+                  className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1 text-center ${paymentMethod === 'cult_wallet' ? 'bg-amber-950/40 border-amber-500 ring-1 ring-amber-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
+                >
+                  <Coins className={`w-5 h-5 ${paymentMethod === 'cult_wallet' ? 'text-amber-400' : 'text-slate-500'}`} />
+                  <div className="font-mono text-xs font-bold text-white">CULT Wallet</div>
+                  <div className="font-mono text-[9px] text-amber-400">{cultBalance.toFixed(1)} CULT avail.</div>
+                </div>
 
-                  <div 
-                    onClick={() => setPaymentMethod('qr_code')}
-                    className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1.5 text-center ${paymentMethod === 'qr_code' ? 'bg-cyan-950/40 border-cyan-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
-                  >
-                    <QrCode className={`w-5 h-5 ${paymentMethod === 'qr_code' ? 'text-cyan-400' : 'text-slate-500'}`} />
-                    <div>
-                      <div className="font-mono text-xs font-bold text-white">UPI / GPay</div>
-                      <div className="font-mono text-[9px] text-slate-500">Prajjwal Maurya</div>
-                    </div>
-                  </div>
+                {/* 2. Direct Offline Cash to Vendor */}
+                <div 
+                  onClick={() => setPaymentMethod('offline_cash')}
+                  className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1 text-center ${paymentMethod === 'offline_cash' ? 'bg-emerald-950/40 border-emerald-500 ring-1 ring-emerald-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
+                >
+                  <Banknote className={`w-5 h-5 ${paymentMethod === 'offline_cash' ? 'text-emerald-400' : 'text-slate-500'}`} />
+                  <div className="font-mono text-xs font-bold text-white">Direct Cash</div>
+                  <div className="font-mono text-[9px] text-emerald-400">Offline / Hand-to-Hand</div>
+                </div>
 
-                  <div 
-                    onClick={() => setPaymentMethod('web3')}
-                    className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1.5 text-center ${paymentMethod === 'web3' ? 'bg-emerald-950/40 border-emerald-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
-                  >
-                    <Wallet className={`w-5 h-5 ${paymentMethod === 'web3' ? 'text-emerald-400' : 'text-slate-500'}`} />
-                    <div>
-                      <div className="font-mono text-xs font-bold text-white">Web3 Lock</div>
-                      <div className="font-mono text-[9px] text-slate-500">MetaMask ETH</div>
-                    </div>
-                  </div>
+                {/* 3. UPI / Google Pay QR */}
+                <div 
+                  onClick={() => setPaymentMethod('qr_code')}
+                  className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1 text-center ${paymentMethod === 'qr_code' ? 'bg-cyan-950/40 border-cyan-500 ring-1 ring-cyan-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
+                >
+                  <QrCode className={`w-5 h-5 ${paymentMethod === 'qr_code' ? 'text-cyan-400' : 'text-slate-500'}`} />
+                  <div className="font-mono text-xs font-bold text-white">GPay QR</div>
+                  <div className="font-mono text-[9px] text-slate-500">Prajjwal Maurya</div>
+                </div>
+
+                {/* 4. Web3 Escrow */}
+                <div 
+                  onClick={() => setPaymentMethod('web3')}
+                  className={`p-3 border rounded-xl cursor-pointer transition-all flex flex-col items-center gap-1 text-center ${paymentMethod === 'web3' ? 'bg-purple-950/40 border-purple-500 ring-1 ring-purple-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}
+                >
+                  <Wallet className={`w-5 h-5 ${paymentMethod === 'web3' ? 'text-purple-400' : 'text-slate-500'}`} />
+                  <div className="font-mono text-xs font-bold text-white">Web3 Lock</div>
+                  <div className="font-mono text-[9px] text-slate-500">MetaMask ETH</div>
                 </div>
               </div>
 
+              {/* Method Details & Insufficient Balance Handling */}
               {paymentMethod === 'cult_wallet' && (
-                <div className="bg-amber-950/20 border border-amber-800/50 rounded-xl p-5 text-center space-y-2">
-                  <Coins className="w-8 h-8 text-amber-400 mx-auto" />
-                  <p className="font-mono text-xs text-slate-300">Deducting <strong className="text-amber-400 font-bold">{cartTotalCULT} CULT</strong> from your CULT Virtual Wallet.</p>
-                  <p className="font-mono text-[10px] text-slate-500">Remaining Balance after order: <strong className="text-white">{(cultBalance - parseFloat(cartTotalCULT)).toFixed(2)} CULT</strong></p>
+                <div className="space-y-3">
+                  {hasInsufficientBalance ? (
+                    <div className="bg-rose-950/40 border border-rose-800 rounded-xl p-4 text-center space-y-3">
+                      <div className="flex items-center justify-center gap-2 text-rose-400 font-mono font-bold text-sm">
+                        <AlertTriangle className="w-5 h-5" /> Insufficient CULT Balance!
+                      </div>
+                      <p className="font-mono text-xs text-slate-300">
+                        You have <strong className="text-amber-400">{cultBalance.toFixed(2)} CULT</strong>, but this order total is <strong className="text-white">{cartTotalCULT} CULT</strong>.
+                        <br/>
+                        <span className="text-rose-400 text-[11px]">Short by {(totalNum - cultBalance).toFixed(2)} CULT (≈ ₹{((totalNum - cultBalance) * 100).toLocaleString('en-IN')})</span>
+                      </p>
+                      
+                      <div className="flex flex-col sm:flex-row gap-2 justify-center pt-1">
+                        <button 
+                          onClick={() => { setTopUpModalOpen(true); setTopUpTab('topup'); }}
+                          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono font-bold px-4 py-2 rounded-lg text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                        >
+                          <Coins className="w-4 h-4" /> Top Up Wallet via GPay QR
+                        </button>
+                        <button 
+                          onClick={() => setPaymentMethod('offline_cash')}
+                          className="bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 font-mono font-bold px-4 py-2 rounded-lg text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                        >
+                          <Banknote className="w-4 h-4" /> Pay Offline Cash to Vendor
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-amber-950/20 border border-amber-800/50 rounded-xl p-5 text-center space-y-2">
+                      <Coins className="w-8 h-8 text-amber-400 mx-auto" />
+                      <p className="font-mono text-xs text-slate-300">Deducting <strong className="text-amber-400 font-bold">{cartTotalCULT} CULT</strong> from your CULT Virtual Wallet.</p>
+                      <p className="font-mono text-[10px] text-slate-500">Remaining Balance after order: <strong className="text-white">{(cultBalance - totalNum).toFixed(2)} CULT</strong></p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {paymentMethod === 'offline_cash' && (
+                <div className="bg-emerald-950/20 border border-emerald-800/50 rounded-xl p-5 text-center space-y-3 font-mono">
+                  <Banknote className="w-8 h-8 text-emerald-400 mx-auto" />
+                  <div>
+                    <h4 className="text-white font-bold text-sm">Direct Offline Hand-to-Hand Payment</h4>
+                    <p className="text-emerald-300 text-xs mt-1">
+                      Pay <strong className="text-white font-bold">₹{cartTotalINR} INR</strong> ({cartTotalCULT} CULT value) in cash directly to the vendor upon room delivery or campus pickup.
+                    </p>
+                  </div>
+                  <div className="text-[10px] text-slate-500 bg-black/50 p-2 rounded border border-slate-800">
+                    ✓ No advance wallet deduction • ✓ Vendor will receive your order details and delivery phone number
+                  </div>
                 </div>
               )}
 
               {paymentMethod === 'qr_code' && (
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 text-center space-y-4">
-                  <div className="space-y-1">
-                    <span className="text-xs font-mono text-slate-400 uppercase tracking-widest block">Scan with Google Pay, PhonePe, or Paytm</span>
-                    <strong className="text-white font-mono text-sm block">Prajjwal Maurya</strong>
-                    <code className="text-cyan-400 font-mono text-xs block bg-black py-1 px-3 rounded inline-block border border-slate-800">prajjwal5655@okicici</code>
-                  </div>
-
-                  <div className="w-48 h-48 bg-white p-3 mx-auto rounded-xl shadow-2xl flex items-center justify-center border-2 border-cyan-500/50">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 text-center space-y-3 font-mono">
+                  <span className="text-xs text-slate-400 uppercase tracking-widest block">Direct Google Pay UPI QR</span>
+                  <div className="w-40 h-40 bg-white p-2 mx-auto rounded-xl shadow-xl border-2 border-cyan-500/50">
                     <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=upi://pay?pa=prajjwal5655@okicici%26pn=Prajjwal%20Maurya%26am=${cartTotalINR}%26cu=INR`} 
+                      src="/gpay_qr.png" 
                       alt="Prajjwal Maurya UPI QR Code"
                       className="w-full h-full object-contain"
                     />
                   </div>
-                  
-                  <div className="pt-2 border-t border-slate-900">
-                    <p className="font-mono text-xs text-slate-400">Total Amount to Pay: <strong className="text-emerald-400 font-bold text-sm">₹{cartTotalINR} INR</strong> ({cartTotalCULT} CULT)</p>
+                  <div className="text-[11px] text-slate-400">
+                    Recipient: <strong className="text-white">Prajjwal Maurya</strong> (<code className="text-cyan-400">prajjwal5655@okicici</code>)<br/>
+                    Total: <strong className="text-emerald-400 font-bold">₹{cartTotalINR} INR</strong> ({cartTotalCULT} CULT)
                   </div>
                 </div>
               )}
 
               {paymentMethod === 'web3' && (
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 text-center space-y-3">
-                  <Wallet className="w-10 h-10 text-emerald-400 mx-auto" />
-                  <p className="font-mono text-xs text-slate-400">Smart Contract: <code className="text-emerald-400">0x71C...39A</code></p>
-                  <p className="font-mono text-[11px] text-slate-500">Locking {cartTotalCULT} CULT value in decentralized escrow contract.</p>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 text-center space-y-3 font-mono">
+                  <Wallet className="w-10 h-10 text-purple-400 mx-auto" />
+                  <p className="text-xs text-slate-400">Smart Contract: <code className="text-purple-400">0x71C...39A</code></p>
+                  <p className="text-[11px] text-slate-500">Decentralized Web3 escrow locking {cartTotalCULT} CULT equivalent in simulated ETH smart contract.</p>
                 </div>
               )}
 
               <button 
+                disabled={hasInsufficientBalance}
                 onClick={processOrderPayment}
-                className="w-full bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 py-3.5 rounded-lg font-mono text-xs uppercase tracking-widest font-bold flex items-center justify-center gap-2"
+                className="w-full bg-emerald-950 hover:bg-emerald-900 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-400 border border-emerald-800 py-3.5 rounded-lg font-mono text-xs uppercase tracking-widest font-bold flex items-center justify-center gap-2"
               >
-                <Lock className="w-4 h-4"/> Confirm Order & Lock Escrow
+                <Lock className="w-4 h-4"/> Confirm Order & Submit ({paymentMethod === 'offline_cash' ? 'Cash on Delivery' : `${cartTotalCULT} CULT`})
               </button>
             </div>
           </div>
@@ -1348,7 +1768,7 @@ export default function App() {
                     <Shield className="w-6 h-6 text-emerald-400" />
                     <span>NEXUS<span className="text-emerald-400">RECEIPT</span></span>
                   </div>
-                  <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Official Escrow Transaction Record</p>
+                  <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Hostel Marketplace Verified Transaction</p>
                 </div>
                 <div className="text-right font-mono">
                   <span className="bg-emerald-950 text-emerald-400 border border-emerald-800 px-3 py-1 rounded text-xs font-bold uppercase tracking-wider block">
@@ -1369,22 +1789,30 @@ export default function App() {
                 </div>
                 <div>
                   <span className="text-slate-500 block text-[10px] uppercase tracking-widest">Deliver To</span>
-                  <span className="text-white">{lastReceipt.customerName}</span>
+                  <span className="text-white">{lastReceipt.customerName} ({lastReceipt.customerPhone})</span>
                 </div>
                 <div>
                   <span className="text-slate-500 block text-[10px] uppercase tracking-widest">Payment Rail</span>
-                  <span className="text-amber-400">{lastReceipt.paymentMethod}</span>
+                  <span className="text-amber-400 font-bold">{lastReceipt.paymentMethod}</span>
                 </div>
               </div>
 
               <div className="space-y-3">
-                <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block">Itemized Purchase Summary</span>
+                <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block">Purchased Items & Vendors</span>
                 <div className="bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800 font-mono text-xs">
                   {lastReceipt.items.map((item, i) => (
                     <div key={i} className="p-3 flex justify-between items-center">
                       <div>
                         <span className="text-white font-bold">{item.title}</span>
-                        <span className="text-[10px] text-slate-500 block">Vendor: @{item.seller} | Qty: {item.qty}</span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-slate-500">Vendor: @{item.seller} | Qty: {item.qty}</span>
+                          <button 
+                            onClick={() => openPrivateChat(item.seller, `Hi @${item.seller}, regarding my Order #${lastReceipt.orderId} for "${item.title}": `)}
+                            className="text-cyan-400 hover:text-cyan-300 text-[10px] flex items-center gap-0.5"
+                          >
+                            <MessageSquare className="w-3 h-3" /> Chat Vendor
+                          </button>
+                        </div>
                       </div>
                       <span className="text-amber-400 font-bold">{item.subtotal} CULT</span>
                     </div>
@@ -1394,7 +1822,7 @@ export default function App() {
 
               <div className="border-t border-slate-800 pt-4 flex justify-between items-center font-mono">
                 <div>
-                  <span className="text-slate-500 text-xs uppercase tracking-widest block">Total Paid</span>
+                  <span className="text-slate-500 text-xs uppercase tracking-widest block">Total</span>
                   <span className="text-2xl font-bold text-amber-400">{lastReceipt.totalCULT} CULT</span>
                   <span className="text-xs text-slate-400 block">≈ ₹{lastReceipt.totalINR} INR</span>
                 </div>
@@ -1407,10 +1835,10 @@ export default function App() {
                     <Printer className="w-4 h-4"/> Print / PDF
                   </button>
                   <button 
-                    onClick={() => setActiveView('marketplace')}
+                    onClick={() => setActiveView('my_orders')}
                     className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-4 py-2.5 rounded-lg text-xs font-mono uppercase tracking-widest font-bold"
                   >
-                    Marketplace
+                    View Orders
                   </button>
                 </div>
               </div>
@@ -1421,28 +1849,80 @@ export default function App() {
         {/* My Orders History View */}
         {activeView === 'my_orders' && (
           <div className="max-w-4xl mx-auto space-y-6">
-            <h2 className="text-2xl font-mono font-bold text-white uppercase tracking-wider flex items-center gap-2 border-b border-slate-800 pb-4">
-              <Package className="text-cyan-400" /> Order History & Receipts
-            </h2>
+            <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+              <h2 className="text-2xl font-mono font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                <Package className="text-cyan-400" /> My Purchases & Order History
+              </h2>
+              <button 
+                onClick={() => fetchUserOrders(user?.username, user?.token)}
+                className="text-xs font-mono text-slate-400 hover:text-white flex items-center gap-1 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Refresh
+              </button>
+            </div>
 
             {db.orders.length === 0 ? (
-              <div className="bg-black border border-slate-800 rounded-xl p-12 text-center text-slate-500 font-mono text-sm">
-                No active or past orders found.
+              <div className="bg-black border border-slate-800 rounded-xl p-12 text-center text-slate-500 font-mono text-sm space-y-3">
+                <Package className="w-10 h-10 text-slate-700 mx-auto" />
+                <p>No active or past orders found.</p>
+                <button onClick={() => setActiveView('marketplace')} className="bg-cyan-950 text-cyan-400 border border-cyan-800 px-4 py-2 rounded-lg text-xs uppercase tracking-widest">
+                  Browse Marketplace
+                </button>
               </div>
             ) : (
               <div className="space-y-4">
-                {db.orders.map(order => (
-                  <div key={order.id} className="bg-black border border-slate-800 rounded-xl p-5 space-y-3 font-mono">
-                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                      <span className="text-cyan-400 font-bold text-sm">{order.id}</span>
-                      <span className="text-xs text-emerald-400 bg-emerald-950/40 px-2.5 py-1 rounded border border-emerald-900">{order.status}</span>
+                {db.orders.map(order => {
+                  const uniqueVendors = [...new Set(order.items.map(i => i.seller).filter(Boolean))];
+
+                  return (
+                    <div key={order.id} className="bg-black border border-slate-800 rounded-xl p-5 space-y-4 font-mono shadow-lg">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-cyan-400 font-bold text-sm">Order #{order.id}</span>
+                            <span className="text-[10px] text-slate-500">• {order.timestamp}</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            Payment: <strong className="text-amber-400">{order.paymentMethod === 'offline_cash' ? '💵 Cash on Delivery' : order.paymentMethod === 'cult_wallet' ? '🪙 CULT Wallet' : order.paymentMethod}</strong>
+                          </span>
+                        </div>
+                        <span className="text-xs text-emerald-400 bg-emerald-950/40 px-3 py-1 rounded border border-emerald-900 shrink-0 font-bold">
+                          {order.status}
+                        </span>
+                      </div>
+
+                      <div className="divide-y divide-slate-800 bg-slate-950 rounded-lg p-3 border border-slate-800 space-y-2">
+                        {order.items.map((itm, idx) => (
+                          <div key={idx} className="pt-2 first:pt-0 flex justify-between items-center text-xs">
+                            <div>
+                              <span className="text-white font-bold">{itm.title}</span>
+                              <div className="text-[10px] text-slate-500">Qty: {itm.qty} • Vendor: @{itm.seller}</div>
+                            </div>
+                            <span className="text-amber-400 font-bold">{(parseFloat(itm.price) * itm.qty).toFixed(2)} CULT</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row justify-between sm:items-center pt-2 gap-3 text-xs">
+                        <div className="text-slate-400">
+                          Total: <strong className="text-amber-400 text-sm">{order.total} CULT</strong> (≈ ₹{(parseFloat(order.total) * 100).toLocaleString('en-IN')})
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {uniqueVendors.map(vendor => (
+                            <button 
+                              key={vendor}
+                              onClick={() => openPrivateChat(vendor, `Hi @${vendor}, I am checking on my Order #${order.id}.`)}
+                              className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-3 py-1.5 rounded-lg text-xs uppercase tracking-wider flex items-center gap-1 font-bold"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" /> Chat with @{vendor}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex justify-between items-center text-xs text-slate-400">
-                      <span>Total: <strong className="text-amber-400">{order.total} CULT</strong></span>
-                      <span>{order.timestamp}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1453,40 +1933,209 @@ export default function App() {
 
         {/* Seller Vendor Console */}
         {activeView === 'dashboard' && user?.role === 'seller' && (
-          <div className="space-y-8">
-            <div className="border-b border-slate-800 pb-4">
-                <h2 className="text-2xl font-bold text-white font-mono uppercase tracking-widest flex items-center gap-3">
-                  <Terminal className="w-6 h-6 text-emerald-500" /> Vendor Console
-                </h2>
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-4 gap-4">
+                <div>
+                  <h2 className="text-2xl font-bold text-white font-mono uppercase tracking-widest flex items-center gap-3">
+                    <Terminal className="w-6 h-6 text-emerald-500" /> Vendor Console
+                  </h2>
+                  <p className="text-xs text-slate-500 font-mono mt-1 uppercase tracking-widest">
+                    Manage your product inventory, stock status, and incoming customer orders.
+                  </p>
+                </div>
+
+                <div className="flex gap-2 font-mono text-xs">
+                  <button 
+                    onClick={() => setVendorTab('products')}
+                    className={`px-4 py-2 rounded-lg border transition-all flex items-center gap-1.5 ${vendorTab === 'products' ? 'bg-emerald-950 text-emerald-400 border-emerald-700 font-bold' : 'bg-slate-900 text-slate-400 border-slate-800'}`}
+                  >
+                    <Package className="w-4 h-4" /> Products ({items.filter(i => i.seller === user.username).length})
+                  </button>
+                  <button 
+                    onClick={() => { setVendorTab('orders'); fetchVendorOrders(user.username, user.token); }}
+                    className={`px-4 py-2 rounded-lg border transition-all flex items-center gap-1.5 ${vendorTab === 'orders' ? 'bg-emerald-950 text-emerald-400 border-emerald-700 font-bold' : 'bg-slate-900 text-slate-400 border-slate-800'}`}
+                  >
+                    <ShoppingCart className="w-4 h-4" /> Incoming Sales ({vendorOrders.length})
+                  </button>
+                </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-1">
-                <div className="bg-black border border-slate-800 rounded-xl p-6 relative overflow-hidden">
-                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-900 to-emerald-500"></div>
-                  <h3 className="text-sm font-mono font-bold text-emerald-500 mb-6 uppercase tracking-widest flex items-center gap-2"><PlusCircle className="w-4 h-4"/> Deploy Listing</h3>
-                  
-                  <form onSubmit={handleDeployListing} className="space-y-4">
-                    <input required type="text" value={newProduct.title} onChange={e=>setNewProduct({...newProduct, title: e.target.value})} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm" placeholder="Title..." />
-                    <input required type="number" step="1" value={newProduct.price} onChange={e=>setNewProduct({...newProduct, price: e.target.value})} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm" placeholder="Price (CULT)..." />
-                    <textarea required value={newProduct.desc} onChange={e=>setNewProduct({...newProduct, desc: e.target.value})} rows="3" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm resize-none" placeholder="Description..."></textarea>
-                    <button type="submit" className="w-full bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 font-mono font-bold py-3 rounded-lg text-xs tracking-widest uppercase">Publish Product</button>
-                  </form>
+            {vendorTab === 'orders' ? (
+              <div className="space-y-4 font-mono">
+                <div className="flex justify-between items-center text-xs text-slate-400 border-b border-slate-800 pb-2">
+                  <span>Customer Orders for your Products</span>
+                  <button onClick={() => fetchVendorOrders(user.username, user.token)} className="text-cyan-400 hover:underline flex items-center gap-1">
+                    <RefreshCw className="w-3.5 h-3.5" /> Refresh Orders
+                  </button>
+                </div>
+
+                {vendorOrders.length === 0 ? (
+                  <div className="bg-black border border-slate-800 rounded-xl p-12 text-center text-slate-500 text-xs">
+                    No customer orders received yet. When someone orders your item, it will appear here instantly!
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {vendorOrders.map(order => (
+                      <div key={order.id} className="bg-black border border-slate-800 rounded-xl p-5 space-y-4 shadow-xl">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-cyan-400 font-bold text-sm">Order #{order.id}</span>
+                              <span className="text-[10px] text-slate-500">• {order.timestamp}</span>
+                            </div>
+                            <div className="text-xs text-slate-300 mt-1">
+                              Buyer: <strong className="text-cyan-400 cursor-pointer" onClick={() => setUserProfileModal(order.customerUsername)}>@{order.customerUsername}</strong>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-bold text-amber-400 bg-amber-950/40 px-3 py-1 rounded border border-amber-900">
+                              {order.paymentMethod === 'offline_cash' ? '💵 Cash on Delivery' : '🪙 CULT Wallet Paid'}
+                            </span>
+                            <span className="text-xs text-emerald-400 bg-emerald-950/40 px-3 py-1 rounded border border-emerald-900 font-bold">
+                              {order.status}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Order Items */}
+                        <div className="bg-slate-950 rounded-lg p-3 border border-slate-800 space-y-2 text-xs">
+                          <span className="text-[10px] text-slate-500 uppercase tracking-widest block">Items Ordered from You:</span>
+                          {order.vendorItems.map((itm, idx) => (
+                            <div key={idx} className="flex justify-between items-center">
+                              <span className="text-white font-bold">{itm.title} (x{itm.qty})</span>
+                              <span className="text-amber-400 font-bold">{(parseFloat(itm.price) * itm.qty).toFixed(2)} CULT (₹{(parseFloat(itm.price) * itm.qty * 100).toLocaleString('en-IN')})</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Customer Delivery Details */}
+                        <div className="bg-slate-950 rounded-lg p-3 border border-slate-800 text-xs space-y-1">
+                          <span className="text-[10px] text-slate-500 uppercase tracking-widest block">Delivery & Contact Information:</span>
+                          <div className="text-slate-300"><strong>Name:</strong> {order.shipping?.fullName || 'N/A'}</div>
+                          <div className="text-slate-300 flex items-center gap-2">
+                            <strong>Phone:</strong> 
+                            <a href={`tel:${order.shipping?.phone}`} className="text-cyan-400 hover:underline flex items-center gap-1 font-bold">
+                              <Phone className="w-3 h-3" /> {order.shipping?.phone || 'N/A'}
+                            </a>
+                          </div>
+                          <div className="text-slate-300"><strong>Address:</strong> {order.shipping?.address}, {order.shipping?.city} {order.shipping?.postalCode ? `- ${order.shipping?.postalCode}` : ''}</div>
+                        </div>
+
+                        {/* Action Buttons: Status Updater & Chat with Buyer */}
+                        <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 pt-2">
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-400">Update Status:</span>
+                            <select 
+                              value={order.status} 
+                              onChange={(e) => handleUpdateOrderStatus(order.id, e.target.value)}
+                              className="bg-slate-900 border border-slate-700 text-white rounded px-2.5 py-1 text-xs focus:outline-none font-mono"
+                            >
+                              <option value="Pending / Processing">Pending / Processing</option>
+                              <option value="Accepted & Preparing">Accepted & Preparing</option>
+                              <option value="Out for Delivery">Out for Delivery</option>
+                              <option value="Delivered & Paid">Delivered & Paid (Completed)</option>
+                              <option value="Cancelled">Cancelled</option>
+                            </select>
+                          </div>
+
+                          <button 
+                            onClick={() => openPrivateChat(order.customerUsername, `Hello @${order.customerUsername}, I am contacting you regarding your Order #${order.id}: `)}
+                            className="bg-cyan-950 hover:bg-cyan-900 text-cyan-400 border border-cyan-800 px-4 py-2 rounded-lg text-xs uppercase tracking-wider font-bold flex items-center justify-center gap-2"
+                          >
+                            <MessageSquare className="w-4 h-4" /> Chat with Buyer (@{order.customerUsername})
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Deploy Listing Form */}
+                <div className="lg:col-span-1">
+                  <div className="bg-black border border-slate-800 rounded-xl p-6 relative overflow-hidden shadow-xl">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-900 to-emerald-500"></div>
+                    <h3 className="text-sm font-mono font-bold text-emerald-500 mb-6 uppercase tracking-widest flex items-center gap-2"><PlusCircle className="w-4 h-4"/> Deploy New Listing</h3>
+                    
+                    <form onSubmit={handleDeployListing} className="space-y-4">
+                      <div>
+                        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block mb-1">Product Title *</label>
+                        <input required type="text" value={newProduct.title} onChange={e=>setNewProduct({...newProduct, title: e.target.value})} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm" placeholder="e.g. WiFi Range Extender" />
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block mb-1">Price (CULT Coins) *</label>
+                        <input required type="number" step="1" min="1" value={newProduct.price} onChange={e=>setNewProduct({...newProduct, price: e.target.value})} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm" placeholder="e.g. 20" />
+                        <span className="text-[9px] font-mono text-slate-500 block mt-1">≈ ₹{(parseFloat(newProduct.price || 0) * 100).toLocaleString('en-IN')} INR</span>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block mb-1">Description *</label>
+                        <textarea required value={newProduct.desc} onChange={e=>setNewProduct({...newProduct, desc: e.target.value})} rows="3" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:border-emerald-500 focus:outline-none font-mono text-sm resize-none" placeholder="Provide product details, condition, room delivery notes..."></textarea>
+                      </div>
+
+                      <button type="submit" className="w-full bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800 font-mono font-bold py-3 rounded-lg text-xs tracking-widest uppercase shadow-md">Publish Product</button>
+                    </form>
+                  </div>
+                </div>
+
+                {/* Product Inventory Management */}
+                <div className="lg:col-span-2 space-y-4 font-mono">
+                    <div className="flex justify-between items-center text-xs text-slate-400 border-b border-slate-800 pb-2">
+                      <span>Your Listed Products</span>
+                      <span>Total: {items.filter(item => item.seller === user.username).length} Items</span>
+                    </div>
+
+                    {items.filter(item => item.seller === user.username).length === 0 ? (
+                      <div className="bg-black border border-slate-800 rounded-xl p-10 text-center text-slate-500 text-xs">
+                        You haven't listed any products yet. Use the form on the left to deploy your first listing!
+                      </div>
+                    ) : (
+                      items.filter(item => item.seller === user.username).map(item => {
+                        const isOutOfStock = item.state === 'Out of Stock';
+
+                        return (
+                          <div key={item.id} className="bg-black border border-slate-800 rounded-xl p-5 flex flex-col sm:flex-row justify-between sm:items-center gap-4 hover:border-slate-700 transition-colors">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <h4 className="font-bold text-white text-base">{item.title}</h4>
+                                <span className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wider font-bold ${isOutOfStock ? 'bg-rose-950/50 text-rose-400 border-rose-800' : 'bg-emerald-950/40 text-emerald-400 border-emerald-800'}`}>
+                                  {isOutOfStock ? 'Out of Stock' : 'In Stock'}
+                                </span>
+                              </div>
+                              <p className="text-xs text-amber-400">{item.price} CULT (≈ ₹{parseFloat(item.price) * 100})</p>
+                              <p className="text-xs text-slate-400 max-w-md line-clamp-2">{item.desc}</p>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {/* Toggle Out of Stock */}
+                              <button 
+                                onClick={() => handleToggleStock(item.id)}
+                                className={`px-3 py-2 rounded-lg text-xs uppercase tracking-wider flex items-center gap-1.5 transition-all font-bold border ${isOutOfStock ? 'bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border-emerald-800' : 'bg-amber-950 hover:bg-amber-900 text-amber-400 border-amber-800'}`}
+                                title={isOutOfStock ? "Click to mark Available / In Stock" : "Click to mark Out of Stock"}
+                              >
+                                {isOutOfStock ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
+                                {isOutOfStock ? 'Set In Stock' : 'Set Out of Stock'}
+                              </button>
+
+                              {/* Delete Product */}
+                              <button 
+                                onClick={() => handleDeleteItem(item.id)}
+                                className="bg-rose-950/40 hover:bg-rose-900 text-rose-400 border border-rose-800 px-3 py-2 rounded-lg text-xs uppercase tracking-wider flex items-center gap-1 font-bold transition-all"
+                                title="Delete product permanently"
+                              >
+                                <Trash2 className="w-4 h-4" /> Delete
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                 </div>
               </div>
-
-              <div className="lg:col-span-2 space-y-4">
-                  {items.filter(item => item.seller === user.username).map(item => (
-                    <div key={item.id} className="bg-black border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-                      <div>
-                        <h4 className="font-bold text-white font-mono">{item.title}</h4>
-                        <p className="text-xs text-amber-400 font-mono mt-1">{item.price} CULT (≈ ₹{parseFloat(item.price) * 100})</p>
-                      </div>
-                      <span className="text-[10px] font-mono text-emerald-500 bg-emerald-950/30 px-3 py-1 rounded border border-emerald-900 uppercase tracking-widest">Active</span>
-                    </div>
-                  ))}
-              </div>
-            </div>
+            )}
           </div>
         )}
       </main>

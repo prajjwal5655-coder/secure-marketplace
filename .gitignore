@@ -1,7 +1,12 @@
 node_modules/
 dist/
 __pycache__/
+**/__pycache__/
 *.pyc
+**/*.pyc
 *.db-journal
+*.db-wal
+*.db-shm
 .env
+.env.local
 .DS_Store

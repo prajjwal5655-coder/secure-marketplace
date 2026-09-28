@@ -29,6 +29,11 @@ JWT_EXPIRATION_HOURS = 24
 
 LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
 
+def get_db():
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
 def hash_password(password: str) -> str:
     pwd_bytes = password.encode('utf-8')[:72]
     salt = bcrypt.gensalt()
@@ -58,10 +63,10 @@ def verify_jwt_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid security token.")
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     
-    # Users table (initial cult_balance DEFAULT 0.0)
+    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -123,6 +128,33 @@ def init_db():
             status TEXT NOT NULL
         )
     ''')
+
+    # Notifications table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            order_id TEXT,
+            timestamp TEXT NOT NULL,
+            is_read INTEGER DEFAULT 0
+        )
+    ''')
+
+    # Safe column migrations for existing SQLite databases
+    def ensure_column(table_name, col_name, col_def):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        existing_cols = [r[1] for r in cursor.fetchall()]
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}")
+
+    ensure_column("users", "cult_balance", "REAL DEFAULT 0.0")
+    ensure_column("items", "state", "TEXT DEFAULT 'Available'")
+    ensure_column("items", "currency", "TEXT DEFAULT 'CULT'")
+    ensure_column("orders", "receipt_json", "TEXT")
+    ensure_column("orders", "payment_method", "TEXT DEFAULT 'cult_wallet'")
     
     # Seed default marketplace items if database is empty
     cursor.execute("SELECT COUNT(*) FROM items")
@@ -144,7 +176,7 @@ class ItemModel(BaseModel):
     title: str
     price: str
     currency: str = "CULT"
-    seller: str
+    seller: Optional[str] = None
     state: str = "Available"
     desc: str
 
@@ -174,6 +206,9 @@ class OrderModel(BaseModel):
     status: str
     receipt: Optional[dict] = None
 
+class OrderStatusUpdate(BaseModel):
+    status: str
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
@@ -190,7 +225,7 @@ class ConnectionManager:
                 self.active_connections[room_id].remove(websocket)
 
     async def broadcast(self, message: dict, room_id: str):
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db()
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO messages (room_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
@@ -209,13 +244,16 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+def get_private_room_key(u1: str, u2: str) -> str:
+    return "_".join(sorted([u1, u2]))
+
 @app.get("/")
 async def root():
     return {"status": "online", "system": "Nexus Secure Marketplace & CULT Relay API"}
 
 @app.get("/api/items")
 async def get_items():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT id, title, price, currency, seller, state, desc FROM items ORDER BY id DESC")
     rows = cursor.fetchall()
@@ -229,7 +267,7 @@ async def get_items():
             "price": r[2],
             "currency": r[3],
             "seller": r[4],
-            "state": r[5],
+            "state": r[5] or "Available",
             "desc": r[6]
         })
     return items
@@ -242,11 +280,11 @@ async def create_item(item: ItemModel, authorization: Optional[str] = Header(Non
     token = authorization.split(" ")[1]
     user_payload = verify_jwt_token(token)
     
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO items (title, price, currency, seller, state, desc) VALUES (?, ?, ?, ?, ?, ?)",
-        (item.title, item.price, item.currency, user_payload["username"], item.state, item.desc)
+        (item.title, str(item.price), item.currency, user_payload["username"], item.state or "Available", item.desc)
     )
     new_id = cursor.lastrowid
     conn.commit()
@@ -255,11 +293,69 @@ async def create_item(item: ItemModel, authorization: Optional[str] = Header(Non
     res = item.dict()
     res["id"] = new_id
     res["seller"] = user_payload["username"]
+    res["state"] = item.state or "Available"
     return res
+
+@app.patch("/api/items/{item_id}/toggle-stock")
+async def toggle_item_stock(item_id: int, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT seller, state FROM items WHERE id = ?", (item_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Item not found.")
+    
+    seller, current_state = row[0], row[1]
+    if seller != user_payload["username"] and user_payload.get("role") != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Unauthorized: Only the product seller can change stock status.")
+    
+    new_state = "Out of Stock" if current_state == "Available" else "Available"
+    cursor.execute("UPDATE items SET state = ? WHERE id = ?", (new_state, item_id))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "success", "id": item_id, "state": new_state}
+
+@app.delete("/api/items/{item_id}")
+async def delete_item(item_id: int, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT seller FROM items WHERE id = ?", (item_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Item not found.")
+    
+    seller = row[0]
+    if seller != user_payload["username"] and user_payload.get("role") != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Unauthorized: Only the seller can delete this item.")
+    
+    cursor.execute("DELETE FROM items WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "success", "message": f"Item {item_id} deleted successfully."}
 
 @app.post("/api/auth/register")
 async def register(req: AuthRegisterRequest):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT username FROM users WHERE username = ?", (req.username,))
     if cursor.fetchone():
@@ -267,7 +363,7 @@ async def register(req: AuthRegisterRequest):
         raise HTTPException(status_code=400, detail="Username already exists in registry.")
     
     hashed_pw = hash_password(req.password)
-    initial_balance = 0.0  # User starts with 0 CULT coins
+    initial_balance = 0.0
     cursor.execute(
         "INSERT INTO users (username, email, hashed_password, role, cult_balance) VALUES (?, ?, ?, ?, ?)",
         (req.username, req.email, hashed_pw, req.role, initial_balance)
@@ -291,7 +387,7 @@ async def login(req: AuthLoginRequest):
     if len(user_attempts) >= 5:
         raise HTTPException(status_code=429, detail="Too many failed login attempts. Please wait 60 seconds.")
     
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT username, email, hashed_password, role, cult_balance FROM users WHERE username = ?", (req.username,))
     user_row = cursor.fetchone()
@@ -322,7 +418,7 @@ async def get_wallet_balance(username: str, authorization: Optional[str] = Heade
     token = authorization.split(" ")[1]
     verify_jwt_token(token)
     
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (username,))
     row = cursor.fetchone()
@@ -330,6 +426,35 @@ async def get_wallet_balance(username: str, authorization: Optional[str] = Heade
     
     balance = row[0] if row and row[0] is not None else 0.0
     return {"username": username, "cultBalance": balance}
+
+@app.get("/api/wallet/{username}/transactions")
+async def get_wallet_transactions(username: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    if user_payload["username"] != username:
+        raise HTTPException(status_code=403, detail="Unauthorized.")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, utr_ref, username, cult_amount, inr_amount, timestamp, status FROM utr_transactions WHERE username = ? ORDER BY id DESC", (username,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    txs = []
+    for r in rows:
+        txs.append({
+            "id": r[0],
+            "utrRef": r[1],
+            "username": r[2],
+            "cultAmount": r[3],
+            "inrAmount": r[4],
+            "timestamp": r[5],
+            "status": r[6]
+        })
+    return txs
 
 @app.post("/api/wallet/topup")
 async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = Header(None)):
@@ -342,28 +467,28 @@ async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = He
     if user_payload["username"] != req.username:
         raise HTTPException(status_code=403, detail="Unauthorized wallet modification.")
 
-    # Validate UTR format (Must be exactly 12 numeric digits for standard Indian UPI transactions)
     clean_utr = req.utr_ref.strip()
     if not re.match(r"^\d{12}$", clean_utr):
         raise HTTPException(
             status_code=400, 
-            detail="Invalid UTR Reference Number. UPI UTR / RRN must be exactly a 12-digit numeric code from your UPI payment receipt."
+            detail="Invalid UTR Reference Number. UPI UTR / RRN must be exactly a 12-digit numeric code from your Google Pay receipt."
         )
 
-    conn = sqlite3.connect(DB_FILE)
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="Top up amount must be greater than 0.")
+
+    conn = get_db()
     cursor = conn.cursor()
 
-    # Check if UTR has already been redeemed
     cursor.execute("SELECT utr_ref, username FROM utr_transactions WHERE utr_ref = ?", (clean_utr,))
     existing_utr = cursor.fetchone()
     if existing_utr:
         conn.close()
         raise HTTPException(
             status_code=400, 
-            detail=f"Security Violation: UTR {clean_utr} has already been redeemed and processed by @{existing_utr[1]}."
+            detail=f"Security Violation: UTR {clean_utr} has already been redeemed and credited by @{existing_utr[1]}."
         )
 
-    # Fetch current user wallet balance
     cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (req.username,))
     row = cursor.fetchone()
     current_bal = row[0] if row and row[0] is not None else 0.0
@@ -372,13 +497,11 @@ async def topup_cult_wallet(req: TopUpRequest, authorization: Optional[str] = He
     inr_amount = req.amount * 100.0
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Record UTR payment transaction
     cursor.execute(
         "INSERT INTO utr_transactions (utr_ref, username, cult_amount, inr_amount, timestamp, status) VALUES (?, ?, ?, ?, ?, ?)",
         (clean_utr, req.username, req.amount, inr_amount, timestamp_str, "VERIFIED_AND_CREDITED")
     )
 
-    # Credit wallet
     cursor.execute("UPDATE users SET cult_balance = ? WHERE username = ?", (new_balance, req.username))
     conn.commit()
     conn.close()
@@ -414,7 +537,7 @@ async def get_orders(username: str, authorization: Optional[str] = Header(None))
     if user_payload["username"] != username:
         raise HTTPException(status_code=403, detail="Access denied: Cannot fetch order history for another user.")
     
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT id, username, items_json, total, shipping_json, payment_method, timestamp, status, receipt_json FROM orders WHERE username = ? ORDER BY rowid DESC", (username,))
     rows = cursor.fetchall()
@@ -435,6 +558,77 @@ async def get_orders(username: str, authorization: Optional[str] = Header(None))
         })
     return orders
 
+@app.get("/api/vendor/orders/{seller_username}")
+async def get_vendor_orders(seller_username: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    
+    if user_payload["username"] != seller_username and user_payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Access denied: Cannot view other vendors' sales.")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, items_json, total, shipping_json, payment_method, timestamp, status, receipt_json FROM orders ORDER BY rowid DESC")
+    all_rows = cursor.fetchall()
+    conn.close()
+
+    vendor_orders = []
+    for r in all_rows:
+        try:
+            items_list = json.loads(r[2])
+            matching_items = [item for item in items_list if item.get("seller") == seller_username]
+            if matching_items:
+                vendor_orders.append({
+                    "id": r[0],
+                    "customerUsername": r[1],
+                    "items": items_list,
+                    "vendorItems": matching_items,
+                    "total": r[3],
+                    "shipping": json.loads(r[4]),
+                    "paymentMethod": r[5],
+                    "timestamp": r[6],
+                    "status": r[7],
+                    "receipt": json.loads(r[8]) if r[8] else None
+                })
+        except Exception:
+            continue
+
+    return vendor_orders
+
+@app.patch("/api/orders/{order_id}/status")
+async def update_order_status(order_id: str, payload: OrderStatusUpdate, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, items_json, status FROM orders WHERE id = ?", (order_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Order not found.")
+
+    buyer_username = row[0]
+    items_list = json.loads(row[1])
+    sellers = [item.get("seller") for item in items_list if item.get("seller")]
+
+    if user_payload["username"] != buyer_username and user_payload["username"] not in sellers and user_payload.get("role") != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Unauthorized to update status for this order.")
+
+    cursor.execute("UPDATE orders SET status = ? WHERE id = ?", (payload.status, order_id))
+    conn.commit()
+    conn.close()
+
+    return {"status": "success", "order_id": order_id, "new_status": payload.status}
+
 @app.post("/api/orders")
 async def create_order(order: OrderModel, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -443,18 +637,33 @@ async def create_order(order: OrderModel, authorization: Optional[str] = Header(
     token = authorization.split(" ")[1]
     user_payload = verify_jwt_token(token)
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db()
     cursor = conn.cursor()
     
+    # Check out-of-stock items in cart
+    for item in order.items:
+        if "id" in item:
+            cursor.execute("SELECT state FROM items WHERE id = ?", (item["id"],))
+            state_row = cursor.fetchone()
+            if state_row and state_row[0] == "Out of Stock":
+                conn.close()
+                raise HTTPException(status_code=400, detail=f"Item '{item.get('title')}' is currently Out of Stock.")
+
     if order.paymentMethod == 'cult_wallet':
         cursor.execute("SELECT cult_balance FROM users WHERE username = ?", (user_payload["username"],))
         row = cursor.fetchone()
         current_bal = row[0] if row and row[0] is not None else 0.0
-        order_total = float(order.total)
+        try:
+            order_total = float(order.total)
+        except ValueError:
+            order_total = 0.0
         
         if current_bal < order_total:
             conn.close()
-            raise HTTPException(status_code=400, detail=f"Insufficient CULT Balance. You have {current_bal} CULT, but order total is {order_total} CULT.")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Insufficient CULT Balance. You have {current_bal:.2f} CULT, but this order requires {order_total:.2f} CULT. Please top up your wallet or choose Direct Cash on Delivery."
+            )
             
         new_balance = current_bal - order_total
         cursor.execute("UPDATE users SET cult_balance = ? WHERE username = ?", (new_balance, user_payload["username"]))
@@ -473,9 +682,104 @@ async def create_order(order: OrderModel, authorization: Optional[str] = Header(
             json.dumps(order.receipt) if order.receipt else None
         )
     )
+
+    # Collect distinct sellers and create order notifications & messages
+    sellers = set()
+    for itm in order.items:
+        s = itm.get("seller")
+        if s and s != user_payload["username"]:
+            sellers.add(s)
+
+    items_summary = ", ".join([f"{i.get('title', 'Item')} (x{i.get('qty', 1)})" for i in order.items])
+    phone = order.shipping.get("phone", "N/A")
+    address = order.shipping.get("address", "N/A")
+    city = order.shipping.get("city", "N/A")
+    
+    pay_label = (
+        "Direct Cash / Offline Hand-to-Hand" if order.paymentMethod in ['offline_cash', 'cod'] 
+        else "CULT Virtual Wallet" if order.paymentMethod == 'cult_wallet'
+        else "UPI / GPay"
+    )
+
+    timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for seller in sellers:
+        cursor.execute(
+            "INSERT INTO notifications (recipient, sender, title, message, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                seller,
+                order.username,
+                f"New Order #{order.id}",
+                f"Buyer @{order.username} ordered: {items_summary}. Total: {order.total} CULT. Pay Method: {pay_label}. Deliver to: {address}, {city} (Phone: {phone})",
+                order.id,
+                timestamp_now
+            )
+        )
+
+        room_id = get_private_room_key(order.username, seller)
+        order_alert_msg = (
+            f"📦 [ORDER #{order.id} NOTIFICATION]\n"
+            f"Buyer: @{order.username}\n"
+            f"Items: {items_summary}\n"
+            f"Total: {order.total} CULT (≈ ₹{float(order.total)*100:.0f} INR)\n"
+            f"Payment: {pay_label}\n"
+            f"Contact: {order.shipping.get('fullName', order.username)} ({phone})\n"
+            f"Address: {address}, {city} - {order.shipping.get('postalCode', '')}"
+        )
+        cursor.execute(
+            "INSERT INTO messages (room_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+            (room_id, "SYSTEM_ORDER_BOT", order_alert_msg, timestamp_now)
+        )
+
     conn.commit()
     conn.close()
+
+    for seller in sellers:
+        room_id = get_private_room_key(order.username, seller)
+        if room_id in manager.active_connections:
+            msg_obj = {
+                "id": int(time.time() * 1000),
+                "sender": "SYSTEM_ORDER_BOT",
+                "text": order_alert_msg,
+                "timestamp": timestamp_now
+            }
+            try:
+                for connection in manager.active_connections[room_id]:
+                    await connection.send_text(json.dumps(msg_obj))
+            except Exception:
+                pass
+
     return {"status": "success", "order_id": order.id}
+
+@app.get("/api/notifications/{username}")
+async def get_user_notifications(username: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    if user_payload["username"] != username:
+        raise HTTPException(status_code=403, detail="Unauthorized.")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, recipient, sender, title, message, order_id, timestamp, is_read FROM notifications WHERE recipient = ? ORDER BY id DESC LIMIT 50", (username,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    notifs = []
+    for r in rows:
+        notifs.append({
+            "id": r[0],
+            "recipient": r[1],
+            "sender": r[2],
+            "title": r[3],
+            "message": r[4],
+            "orderId": r[5],
+            "timestamp": r[6],
+            "isRead": bool(r[7])
+        })
+    return notifs
 
 @app.websocket("/ws/chat/global")
 async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None)):
@@ -491,7 +795,7 @@ async def global_chat_ws(websocket: WebSocket, token: Optional[str] = Query(None
 
     await manager.connect(websocket, "global")
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT id, sender, text, timestamp FROM messages WHERE room_id = 'global' ORDER BY id ASC LIMIT 50")
         history = cursor.fetchall()
@@ -526,15 +830,16 @@ async def private_chat_ws(websocket: WebSocket, room_id: str, token: Optional[st
         await websocket.close(code=4003)
         return
 
-    if user_payload["username"] not in room_id.split("_"):
+    room_participants = room_id.split("_")
+    if user_payload["username"] not in room_participants and user_payload.get("role") != "admin":
         await websocket.close(code=4003)
         return
 
     await manager.connect(websocket, room_id)
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, sender, text, timestamp FROM messages WHERE room_id = ? ORDER BY id ASC LIMIT 50", (room_id,))
+        cursor.execute("SELECT id, sender, text, timestamp FROM messages WHERE room_id = ? ORDER BY id ASC LIMIT 60", (room_id,))
         history = cursor.fetchall()
         conn.close()
         
