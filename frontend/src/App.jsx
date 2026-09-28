@@ -81,6 +81,188 @@ async function decryptText(cipherBase64, roomId) {
   }
 }
 
+// TON 618 Ultramassive Black Hole - Relativistic Accretion Disk & Photonic Light Stream Animation
+function Ton618CosmicBackground() {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    let animId;
+
+    let width = (canvas.width = window.innerWidth);
+    let height = (canvas.height = window.innerHeight);
+
+    const handleResize = () => {
+      if (!canvas) return;
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    };
+    window.addEventListener('resize', handleResize);
+
+    // Generate orbiting relativistic photon particles around TON 618 accretion disk
+    const particleCount = 130;
+    const particles = [];
+
+    for (let i = 0; i < particleCount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 110 + Math.random() * 460; // Orbital radius
+      const speed = (0.003 + (1 / Math.sqrt(dist)) * 0.09) * (Math.random() > 0.08 ? 1 : -1);
+      const size = 0.8 + Math.random() * 2.4;
+      const opacity = 0.3 + Math.random() * 0.7;
+      const colorType = Math.random();
+      const color = colorType > 0.65 ? '#f59e0b' : colorType > 0.3 ? '#06b6d4' : '#fbbf24';
+      const tilt = 0.36 + (Math.random() - 0.5) * 0.12;
+
+      particles.push({
+        angle,
+        dist,
+        speed,
+        size,
+        opacity,
+        color,
+        tilt,
+        life: Math.random() * 100
+      });
+    }
+
+    // Infalling cosmic photon streams curving into singularity
+    const streamCount = 24;
+    const streams = [];
+    for (let s = 0; s < streamCount; s++) {
+      streams.push({
+        angle: Math.random() * Math.PI * 2,
+        dist: 260 + Math.random() * 380,
+        speed: 0.007 + Math.random() * 0.014,
+        decaySpeed: 0.5 + Math.random() * 0.8,
+        trail: []
+      });
+    }
+
+    let globalRotation = 0;
+
+    const render = () => {
+      ctx.clearRect(0, 0, width, height);
+
+      const centerX = width * 0.5;
+      const centerY = height * 0.36; // Aligned with TON 618 black hole center
+
+      globalRotation += 0.003;
+
+      // 1. Relativistic Accretion Disk Swirling Luminous Plasma Glow
+      const grad = ctx.createRadialGradient(centerX, centerY, 50, centerX, centerY, 420);
+      grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      grad.addColorStop(0.22, 'rgba(6, 182, 212, 0.08)');
+      grad.addColorStop(0.42, 'rgba(245, 158, 11, 0.16)');
+      grad.addColorStop(0.68, 'rgba(217, 119, 6, 0.06)');
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.scale(1.42, 0.52); // Accretion disk 3D perspective tilt
+      ctx.rotate(globalRotation * 0.5);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, 420, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // 2. Orbiting Photon Disk Particles with Doppler Relativistic Beaming
+      particles.forEach(p => {
+        p.angle += p.speed;
+        p.life += 0.02;
+
+        const x = centerX + Math.cos(p.angle) * p.dist * 1.38;
+        const y = centerY + Math.sin(p.angle) * p.dist * p.tilt;
+
+        // Doppler beaming: photons approaching observer on the left are brighter & intensified
+        const beaming = 0.5 + 0.5 * Math.sin(p.angle + Math.PI * 0.25);
+        const currentOpacity = p.opacity * (0.35 + beaming * 0.65) * (0.8 + 0.2 * Math.sin(p.life * 5));
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, p.size * (0.8 + beaming * 0.5), 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = Math.min(1, currentOpacity);
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 10 * beaming;
+        ctx.fill();
+        ctx.restore();
+      });
+
+      // 3. Gravitational Lensing Infalling Streams
+      streams.forEach(st => {
+        st.angle += st.speed;
+        st.dist -= st.decaySpeed;
+
+        if (st.dist < 70) {
+          st.dist = 360 + Math.random() * 220;
+          st.angle = Math.random() * Math.PI * 2;
+          st.trail = [];
+        }
+
+        const sx = centerX + Math.cos(st.angle) * st.dist * 1.32;
+        const sy = centerY + Math.sin(st.angle) * st.dist * 0.42;
+
+        st.trail.push({ x: sx, y: sy });
+        if (st.trail.length > 9) st.trail.shift();
+
+        if (st.trail.length > 2) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(st.trail[0].x, st.trail[0].y);
+          for (let t = 1; t < st.trail.length; t++) {
+            ctx.lineTo(st.trail[t].x, st.trail[t].y);
+          }
+          ctx.strokeStyle = st.dist < 180 ? 'rgba(6, 182, 212, 0.6)' : 'rgba(245, 158, 11, 0.45)';
+          ctx.lineWidth = 1.3;
+          ctx.shadowColor = '#f59e0b';
+          ctx.shadowBlur = 8;
+          ctx.stroke();
+          ctx.restore();
+        }
+      });
+
+      animId = requestAnimationFrame(render);
+    };
+
+    render();
+
+    return () => {
+      cancelAnimationFrame(animId);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+      {/* Dynamic Canvas for Orbiting Relativistic Photon Disk & Infalling Rays */}
+      <canvas ref={canvasRef} className="w-full h-full block" />
+
+      {/* Outer Rotating Conic Accretion Ring Light Glow */}
+      <div 
+        className="absolute top-[36%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[740px] h-[340px] rounded-full opacity-45 mix-blend-screen pointer-events-none"
+        style={{
+          background: 'conic-gradient(from 0deg, transparent 0deg, rgba(245, 158, 11, 0.6) 90deg, rgba(6, 182, 212, 0.65) 180deg, transparent 270deg, rgba(245, 158, 11, 0.6) 360deg)',
+          filter: 'blur(36px)',
+          animation: 'photonRingRotate 24s linear infinite'
+        }}
+      />
+
+      {/* Relativistic Counter-Rotating Inner Photon Glow Ring */}
+      <div 
+        className="absolute top-[36%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[520px] h-[220px] rounded-full opacity-55 mix-blend-screen pointer-events-none"
+        style={{
+          background: 'conic-gradient(from 180deg, transparent 0deg, rgba(6, 182, 212, 0.75) 120deg, rgba(251, 191, 36, 0.85) 240deg, transparent 360deg)',
+          filter: 'blur(22px)',
+          animation: 'photonRingRotate 15s linear infinite reverse'
+        }}
+      />
+    </div>
+  );
+}
+
 export default function App() {
   const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
   const isLocal = host === 'localhost' || host === '127.0.0.1';
@@ -365,6 +547,7 @@ export default function App() {
 
   useEffect(() => {
     if (user && user.token) {
+      localStorage.setItem('ton618_user', JSON.stringify(user));
       localStorage.setItem('nexus_user', JSON.stringify(user));
       fetchWalletBalance(user.username, user.token);
       fetchUserOrders(user.username, user.token);
@@ -373,6 +556,7 @@ export default function App() {
         fetchVendorOrders(user.username, user.token);
       }
     } else {
+      localStorage.removeItem('ton618_user');
       localStorage.removeItem('nexus_user');
       setCultBalance(0.0);
       setVendorOrders([]);
@@ -522,7 +706,8 @@ export default function App() {
               }
               setGroups(prev => {
                 const updated = prev.map(g => g.id === selectedGroup?.id ? { ...g, members: data.members } : g);
-                localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+                localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
                 return updated;
               });
               setSelectedGroup(prev => prev ? { ...prev, members: data.members } : prev);
@@ -929,7 +1114,8 @@ export default function App() {
         const createdGrp = data.group;
         setGroups(prev => {
           const updated = [createdGrp, ...prev.filter(g => g.id !== createdGrp.id)];
-          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
           return updated;
         });
         setSelectedGroup(createdGrp);
@@ -944,6 +1130,7 @@ export default function App() {
       // Local persistent fallback so creation never fails
       setGroups(prev => {
         const updated = [localGroupObj, ...prev.filter(g => g.id !== localGroupObj.id)];
+        localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
         return updated;
       });
@@ -970,7 +1157,8 @@ export default function App() {
       if (res.ok) {
         setGroups(prev => {
           const updated = prev.filter(g => g.id !== groupId);
-          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
           return updated;
         });
         if (selectedGroup?.id === groupId) {
@@ -985,6 +1173,7 @@ export default function App() {
     } catch (err) {
       setGroups(prev => {
         const updated = prev.filter(g => g.id !== groupId);
+        localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
         return updated;
       });
@@ -1015,7 +1204,8 @@ export default function App() {
         const data = await res.json();
         setGroups(prev => {
           const updated = prev.map(g => g.id === groupId ? { ...g, members: data.members } : g);
-          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
           return updated;
         });
         if (selectedGroup?.id === groupId) {
@@ -1033,7 +1223,8 @@ export default function App() {
             }
             return g;
           });
-          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
           return updated;
         });
         if (selectedGroup?.id === groupId) {
@@ -1057,6 +1248,7 @@ export default function App() {
           }
           return g;
         });
+        localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
         return updated;
       });
@@ -1083,7 +1275,8 @@ export default function App() {
         const data = await res.json();
         setGroups(prev => {
           const updated = prev.map(g => g.id === groupId ? { ...g, members: data.members } : g);
-          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
           return updated;
         });
         if (selectedGroup?.id === groupId) {
@@ -1099,6 +1292,7 @@ export default function App() {
           }
           return g;
         });
+        localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
         return updated;
       });
@@ -1132,7 +1326,8 @@ export default function App() {
         const data = await res.json();
         setGroups(prev => {
           const updated = prev.map(g => g.id === groupId ? { ...g, members: data.members } : g);
-          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
           return updated;
         });
         setSelectedGroup(prev => prev?.id === groupId ? { ...prev, members: data.members } : prev);
@@ -1151,6 +1346,7 @@ export default function App() {
           }
           return g;
         });
+        localStorage.setItem('ton618_persisted_groups', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
         return updated;
       });
@@ -1310,7 +1506,8 @@ export default function App() {
         const data = await res.json();
         setItems(prev => {
           const updated = prev.map(item => item.id === itemId ? { ...item, state: data.state } : item);
-          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_items', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
           return updated;
         });
         showToast(`Product marked as ${data.state}!`);
@@ -1321,6 +1518,7 @@ export default function App() {
     } catch (err) {
       setItems(prev => {
         const updated = prev.map(item => item.id === itemId ? { ...item, state: item.state === 'Available' ? 'Out of Stock' : 'Available' } : item);
+        localStorage.setItem('ton618_persisted_items', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
         return updated;
       });
@@ -1339,7 +1537,8 @@ export default function App() {
       if (res.ok) {
         setItems(prev => {
           const updated = prev.filter(item => item.id !== itemId);
-          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_items', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
           return updated;
         });
         showToast("Product deleted successfully from catalog!");
@@ -1350,6 +1549,7 @@ export default function App() {
     } catch (err) {
       setItems(prev => {
         const updated = prev.filter(item => item.id !== itemId);
+        localStorage.setItem('ton618_persisted_items', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
         return updated;
       });
@@ -1467,6 +1667,7 @@ export default function App() {
   const logout = () => {
     setUser(null);
     setCultBalance(0.0);
+    localStorage.removeItem('ton618_user');
     localStorage.removeItem('nexus_user');
     setActiveView('marketplace');
   };
@@ -1538,14 +1739,16 @@ export default function App() {
         const created = await res.json();
         setItems(prev => {
           const updated = [created, ...prev.filter(i => i.id !== created.id && i.id !== tempId)];
-          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_items', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
           return updated;
         });
         showToast("New item listed on hostel marketplace!");
       } else {
         setItems(prev => {
           const updated = [itemPayload, ...prev];
-          localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
+          localStorage.setItem('ton618_persisted_items', JSON.stringify(updated));
+        localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
           return updated;
         });
         showToast("Item listed in catalog.");
@@ -1553,6 +1756,7 @@ export default function App() {
     } catch (err) {
       setItems(prev => {
         const updated = [itemPayload, ...prev];
+        localStorage.setItem('ton618_persisted_items', JSON.stringify(updated));
         localStorage.setItem('nexus_persisted_items', JSON.stringify(updated));
         return updated;
       });
@@ -2497,7 +2701,10 @@ export default function App() {
                       key={grp.id}
                       onClick={() => { 
                         setSelectedGroup(grp); 
-                        try { localStorage.setItem('nexus_selected_group', JSON.stringify(grp)); } catch (e) {}
+                        try { 
+                          localStorage.setItem('ton618_selected_group', JSON.stringify(grp));
+                          localStorage.setItem('nexus_selected_group', JSON.stringify(grp)); 
+                        } catch (e) {}
                         setMobileGroupTab('room'); 
                       }}
                       className={`p-3 rounded-lg cursor-pointer transition-all border pt-3 first:pt-3 ${isSelected ? 'bg-slate-900/90 border-cyan-500/80 shadow-lg' : 'bg-slate-950 border-slate-800/80 hover:border-slate-700'}`}
@@ -2862,6 +3069,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen ton618-space-bg text-slate-200 font-sans relative">
+      {/* TON 618 Live Animated Black Hole Photons & Accretion Lensing Layer */}
+      <Ton618CosmicBackground />
+
       {renderAuthModal()}
       {renderCreateGroupModal()}
       {renderStreamModal()}
