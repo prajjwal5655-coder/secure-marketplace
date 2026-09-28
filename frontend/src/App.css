@@ -30,26 +30,11 @@
   100% { transform: rotate(360deg); }
 }
 
-/* Masterpiece TON 618 Deep Cosmic Background with Parallax Overlay */
+/* Masterpiece TON 618 Deep Cosmic Background with Interstellar Black Hole Shader */
 .ton618-space-bg {
-  background-color: #020307;
-  background-image: 
-    radial-gradient(ellipse at 50% 15%, rgba(245, 158, 11, 0.08) 0%, rgba(6, 182, 212, 0.04) 40%, transparent 75%),
-    url('/ton618_blackhole.jpg');
-  background-size: cover;
-  background-position: center top;
-  background-attachment: fixed;
-  background-repeat: no-repeat;
+  background-color: #010204;
   position: relative;
-}
-
-.ton618-space-bg::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: radial-gradient(circle at center, transparent 30%, rgba(2, 3, 7, 0.75) 70%, #020307 100%);
-  pointer-events: none;
-  z-index: 1;
+  overflow-x: hidden;
 }
 
 .ton618-space-bg::after {
@@ -60,12 +45,12 @@
     to bottom,
     rgba(255,255,255,0),
     rgba(255,255,255,0) 50%,
-    rgba(245, 158, 11, 0.015) 50%,
-    rgba(6, 182, 212, 0.015)
+    rgba(245, 158, 11, 0.008) 50%,
+    rgba(6, 182, 212, 0.008)
   );
   background-size: 100% 4px;
   pointer-events: none;
-  z-index: 2;
+  z-index: 1;
 }
 
 /* Glassmorphic TON 618 Cosmic Containers */
