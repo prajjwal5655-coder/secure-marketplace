@@ -81,294 +81,369 @@ async function decryptText(cipherBase64, roomId) {
   }
 }
 
-// TON 618 // Interstellar Gargantua Black Hole - Exact Image with Live Moving Rings & Accretion Stream Simulation
+// TON 618 // Interstellar Gargantua Black Hole - Real-Time Relativistic Rings & Accretion Plasma Simulation
 function Ton618CosmicBackground() {
   const canvasRef = useRef(null);
-  const mouseRef = useRef({ x: 0, y: 0 });
+  const mouseRef = useRef({ x: 0.5, y: 0.5 });
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
 
+    let gl = canvas.getContext('webgl', { antialias: true, alpha: false });
     let animId;
     let startTime = Date.now();
 
     const handleMouseMove = (e) => {
       mouseRef.current = {
-        x: (e.clientX / window.innerWidth - 0.5) * 18,
-        y: (e.clientY / window.innerHeight - 0.5) * 12
+        x: e.clientX / window.innerWidth,
+        y: 1.0 - e.clientY / window.innerHeight
       };
     };
     window.addEventListener('mousemove', handleMouseMove);
 
-    let width = (canvas.width = window.innerWidth);
-    let height = (canvas.height = window.innerHeight);
+    if (!gl) {
+      // Fallback to high-precision 2D Canvas if WebGL is unavailable
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      let width = (canvas.width = window.innerWidth);
+      let height = (canvas.height = window.innerHeight);
+
+      const handleResize = () => {
+        if (!canvas) return;
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+      };
+      window.addEventListener('resize', handleResize);
+
+      const render2D = () => {
+        ctx.clearRect(0, 0, width, height);
+        const cx = width * 0.5;
+        const cy = height * 0.42;
+        const t = (Date.now() - startTime) * 0.001;
+
+        // Draw Interstellar Top Arch
+        ctx.save();
+        ctx.translate(cx, cy - 20);
+        ctx.scale(1.2, 0.75);
+        const topGrad = ctx.createRadialGradient(0, 0, 70, 0, 0, 240);
+        topGrad.addColorStop(0, 'rgba(0,0,0,0)');
+        topGrad.addColorStop(0.35, 'rgba(245,158,11,0.55)');
+        topGrad.addColorStop(0.7, 'rgba(6,182,212,0.35)');
+        topGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = topGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, 240, Math.PI, 0);
+        ctx.fill();
+        ctx.restore();
+
+        // Draw Interstellar Horizontal Disk
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.scale(1.6, 0.4);
+        ctx.rotate(t * 0.08);
+        const diskGrad = ctx.createRadialGradient(0, 0, 80, 0, 0, 320);
+        diskGrad.addColorStop(0, 'rgba(0,0,0,0)');
+        diskGrad.addColorStop(0.25, 'rgba(255,255,255,0.85)');
+        diskGrad.addColorStop(0.5, 'rgba(245,158,11,0.7)');
+        diskGrad.addColorStop(0.85, 'rgba(217,119,6,0.3)');
+        diskGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = diskGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, 320, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // Central Event Horizon Void
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, 95, 0, Math.PI * 2);
+        ctx.fillStyle = '#000000';
+        ctx.shadowColor = '#f59e0b';
+        ctx.shadowBlur = 24;
+        ctx.fill();
+        ctx.restore();
+
+        animId = requestAnimationFrame(render2D);
+      };
+      render2D();
+
+      return () => {
+        cancelAnimationFrame(animId);
+        window.removeEventListener('resize', handleResize);
+        window.removeEventListener('mousemove', handleMouseMove);
+      };
+    }
+
+    // WebGL Relativistic Interstellar (Gargantua) Black Hole Simulation
+    const vsSource = `
+      attribute vec2 position;
+      void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+      }
+    `;
+
+    const fsSource = `
+      precision highp float;
+      uniform vec2 u_resolution;
+      uniform float u_time;
+      uniform vec2 u_mouse;
+
+      #define PI 3.14159265359
+
+      float hash21(vec2 p) {
+        p = fract(p * vec2(234.34, 435.345));
+        p += dot(p, p + 34.23);
+        return fract(p.x * p.y);
+      }
+
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i);
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+
+      float fbm(vec2 p) {
+        float v = 0.0;
+        float amp = 0.5;
+        mat2 rot = mat2(cos(0.55), sin(0.55), -sin(0.55), cos(0.55));
+        for (int i = 0; i < 4; i++) {
+          v += amp * noise(p);
+          p = rot * p * 2.18 + vec2(13.4, 27.8);
+          amp *= 0.48;
+        }
+        return v;
+      }
+
+      vec3 interstellarPlasma(float intensity, float doppler) {
+        vec3 cDeep  = vec3(0.35, 0.04, 0.01);
+        vec3 cAmber = vec3(0.98, 0.46, 0.06);
+        vec3 cGold  = vec3(1.00, 0.88, 0.42);
+        vec3 cWhite = vec3(1.00, 1.00, 0.95);
+        vec3 cCyan  = vec3(0.50, 0.90, 1.00);
+
+        float val = clamp(intensity, 0.0, 3.0);
+        vec3 col = mix(cDeep, cAmber, smoothstep(0.0, 0.45, val));
+        col = mix(col, cGold, smoothstep(0.4, 1.1, val));
+        col = mix(col, cWhite, smoothstep(1.0, 2.0, val));
+
+        if (doppler > 1.25) {
+          float boost = smoothstep(1.25, 2.3, doppler);
+          col = mix(col, cCyan, boost * 0.42);
+        }
+        return col * intensity;
+      }
+
+      void main() {
+        vec2 st = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / min(u_resolution.x, u_resolution.y);
+        st.y += 0.08;
+        
+        vec2 mouseOffset = (u_mouse - 0.5) * 0.06;
+        st -= mouseOffset;
+
+        float dist = length(st);
+        
+        float r_bh = 0.235;
+        float r_photon = r_bh * 1.052;
+        float r_in = 0.285;
+        float r_out = 0.98;
+
+        float deflection = 0.0;
+        if (dist > r_bh * 0.82) {
+          deflection = (r_bh * r_bh * 0.48) / max(0.012, dist - r_bh * 0.68);
+        }
+
+        // 1. Top Lensed Arch
+        vec2 p_top = vec2(st.x, (st.y - deflection * 0.38) * 1.28);
+        float r_top = length(p_top) + deflection * 0.45;
+        float phi_top = atan(p_top.y, p_top.x);
+
+        // 2. Bottom Lensed Arch
+        vec2 p_bot = vec2(st.x, (st.y + deflection * 0.35) * 1.55);
+        float r_bot = length(p_bot) + deflection * 0.42;
+        float phi_bot = atan(p_bot.y, p_bot.x);
+
+        // 3. Equatorial Accretion Disk (Front Crossing Ring)
+        vec2 p_eq = vec2(st.x, st.y / 0.36);
+        float r_eq = length(p_eq);
+        float phi_eq = atan(p_eq.y, p_eq.x);
+
+        vec3 color = vec3(0.0);
+
+        // Top Lensed Arch plasma
+        if (st.y > -0.06 && r_top >= r_in && r_top <= r_out) {
+          float speed = 0.72 / sqrt(r_top + 0.08);
+          float phi_rot = phi_top - u_time * speed;
+
+          float plasma = fbm(vec2(r_top * 16.0, phi_rot * 3.8));
+          float fineRays = fbm(vec2(r_top * 45.0, phi_rot * 8.0));
+          float streaks = sin(r_top * 38.0 + plasma * 4.2) * 0.5 + 0.5;
+
+          float radialProfile = smoothstep(r_in, r_in + 0.10, r_top) * (1.0 - smoothstep(r_out - 0.32, r_out, r_top));
+          float doppler = 1.0 - 0.78 * (st.x / (r_top + 0.01)) * sqrt(r_in / r_top);
+          doppler = clamp(doppler, 0.22, 2.5);
+
+          float intensity = radialProfile * (0.65 + 0.55 * plasma + 0.35 * streaks + 0.25 * fineRays) * pow(doppler, 2.9);
+          float archMask = smoothstep(-0.06, 0.14, st.y);
+          color += interstellarPlasma(intensity * archMask * 1.35, doppler);
+        }
+
+        // Bottom Lensed Arch plasma
+        if (st.y < 0.06 && r_bot >= r_in && r_bot <= r_out * 0.88) {
+          float speed = 0.72 / sqrt(r_bot + 0.08);
+          float phi_rot = phi_bot - u_time * speed;
+
+          float plasma = fbm(vec2(r_bot * 15.0, phi_rot * 3.8));
+          float streaks = sin(r_bot * 32.0 + plasma * 3.8) * 0.5 + 0.5;
+          float radialProfile = smoothstep(r_in, r_in + 0.09, r_bot) * (1.0 - smoothstep(r_out * 0.62, r_out * 0.88, r_bot));
+
+          float doppler = 1.0 - 0.72 * (st.x / (r_bot + 0.01)) * sqrt(r_in / r_bot);
+          doppler = clamp(doppler, 0.22, 2.5);
+
+          float intensity = radialProfile * (0.55 + 0.45 * plasma + 0.3 * streaks) * pow(doppler, 2.6);
+          float archMask = smoothstep(0.06, -0.12, st.y);
+          color += interstellarPlasma(intensity * archMask * 0.95, doppler);
+        }
+
+        // Equatorial Accretion Disk (Front Crossing Ring)
+        if (r_eq >= r_in && r_eq <= r_out) {
+          float speed = 0.82 / sqrt(r_eq + 0.08);
+          float phi_rot = phi_eq - u_time * speed;
+
+          float plasma = fbm(vec2(r_eq * 18.0, phi_rot * 4.2));
+          float fineStreams = fbm(vec2(r_eq * 48.0, phi_rot * 9.5));
+          float ripple = sin(r_eq * 52.0 + plasma * 5.0) * 0.5 + 0.5;
+
+          float radialProfile = smoothstep(r_in, r_in + 0.07, r_eq) * (1.0 - smoothstep(r_out - 0.36, r_out, r_eq));
+          float diskThickness = 0.055 * (1.0 + (r_eq - r_in) * 0.75);
+          float verticalFade = exp(-abs(st.y) / diskThickness);
+
+          float doppler = 1.0 - 0.85 * (st.x / (r_eq + 0.01)) * sqrt(r_in / r_eq);
+          doppler = clamp(doppler, 0.18, 2.7);
+
+          float intensity = radialProfile * verticalFade * (0.65 + 0.60 * plasma + 0.35 * ripple + 0.30 * fineStreams) * pow(doppler, 3.4);
+
+          bool isFront = (st.y <= 0.04) || (dist > r_bh * 1.04);
+          if (isFront) {
+            color += interstellarPlasma(intensity * 1.75, doppler);
+          } else {
+            color += interstellarPlasma(intensity * 0.38, doppler);
+          }
+        }
+
+        // Einstein Photon Ring
+        float photonDist = abs(dist - r_photon);
+        float photonGlow = exp(-photonDist * 110.0) * 2.8 + exp(-photonDist * 34.0) * 1.2;
+        float photonDoppler = clamp(1.0 - 0.88 * (st.x / (dist + 0.001)), 0.3, 2.3);
+        color += interstellarPlasma(photonGlow * pow(photonDoppler, 2.4) * 1.4, photonDoppler);
+
+        // Event Horizon Shadow (Pure Black Hole Void)
+        if (dist < r_bh) {
+          float shadowEdge = smoothstep(r_bh * 0.965, r_bh, dist);
+          if (abs(st.y) < 0.042 && r_eq >= r_in) {
+            float frontDiskSlice = exp(-abs(st.y) / 0.022);
+            color = color * (1.0 - (1.0 - shadowEdge) * (1.0 - frontDiskSlice * 0.90));
+          } else {
+            color *= shadowEdge;
+          }
+        }
+
+        // Relativistic Gravitational Corona
+        float auraDist = max(0.0, dist - r_bh);
+        float corona = exp(-auraDist * 3.6) * 0.22 + exp(-auraDist * 1.4) * 0.09;
+        float coronaDoppler = clamp(1.0 - 0.52 * (st.x / (dist + 0.01)), 0.5, 1.8);
+        color += interstellarPlasma(corona * pow(coronaDoppler, 1.9), coronaDoppler);
+
+        // Lensed Starfield
+        vec2 lensedCoord = st * (1.0 + (r_bh * r_bh * 0.32) / max(dist * dist, 0.008));
+        float star = pow(hash21(floor(lensedCoord * 160.0)), 42.0) * 1.4;
+        if (dist > r_bh * 1.02) {
+          color += vec3(0.65, 0.82, 1.0) * star * smoothstep(r_bh, r_bh + 0.08, dist);
+        }
+
+        // Filmic tone curve
+        color = color / (vec3(1.0) + color * 0.55);
+        color = pow(color, vec3(0.94));
+
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `;
+
+    const createShader = (glCtx, type, source) => {
+      const shader = glCtx.createShader(type);
+      glCtx.shaderSource(shader, source);
+      glCtx.compileShader(shader);
+      if (!glCtx.getShaderParameter(shader, glCtx.COMPILE_STATUS)) {
+        console.error('Shader compile error:', glCtx.getShaderInfoLog(shader));
+        glCtx.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    };
+
+    const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+    const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+    if (!vertexShader || !fragmentShader) return;
+
+    const program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.error('Program link error:', gl.getProgramInfoLog(program));
+      return;
+    }
+
+    gl.useProgram(program);
+
+    // Fullscreen quad buffer
+    const positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([
+        -1.0, -1.0,
+         1.0, -1.0,
+        -1.0,  1.0,
+        -1.0,  1.0,
+         1.0, -1.0,
+         1.0,  1.0,
+      ]),
+      gl.STATIC_DRAW
+    );
+
+    const positionLocation = gl.getAttribLocation(program, 'position');
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+    const uResolution = gl.getUniformLocation(program, 'u_resolution');
+    const uTime = gl.getUniformLocation(program, 'u_time');
+    const uMouse = gl.getUniformLocation(program, 'u_mouse');
 
     const handleResize = () => {
       if (!canvas) return;
-      width = canvas.width = window.innerWidth;
-      height = canvas.height = window.innerHeight;
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      canvas.width = window.innerWidth * dpr;
+      canvas.height = window.innerHeight * dpr;
+      gl.viewport(0, 0, canvas.width, canvas.height);
     };
+    handleResize();
     window.addEventListener('resize', handleResize);
 
-    // 1. Orbiting relativistic photon particles on the arches and disk
-    const particleCount = 140;
-    const particles = [];
-    for (let i = 0; i < particleCount; i++) {
-      const trackType = Math.random() < 0.42 ? 0 : Math.random() < 0.72 ? 1 : 2;
-      const angle = Math.random() * Math.PI * 2;
-      const radiusOffset = (Math.random() - 0.5) * 0.08;
-      const speed = (0.007 + Math.random() * 0.014) * (trackType === 2 ? 1.5 : 1.0);
-      const size = 1.0 + Math.random() * 2.2;
-      const alpha = 0.4 + Math.random() * 0.6;
-      const colorType = Math.random();
-      const color = colorType > 0.65 ? '#ffffff' : colorType > 0.3 ? '#f59e0b' : '#38bdf8';
-
-      particles.push({
-        trackType,
-        angle,
-        radiusOffset,
-        speed,
-        size,
-        alpha,
-        color
-      });
-    }
-
-    // 2. Relativistic plasma waves on Top Arch
-    const topWaveCount = 6;
-    const topWaves = Array.from({ length: topWaveCount }, (_, i) => ({
-      phase: (i / topWaveCount) * Math.PI * 2,
-      speed: 0.018 + i * 0.003,
-      span: 0.35 + Math.random() * 0.45,
-      widthScale: 0.92 + Math.random() * 0.16
-    }));
-
-    // 3. Relativistic plasma waves on Bottom Arch
-    const botWaveCount = 5;
-    const botWaves = Array.from({ length: botWaveCount }, (_, i) => ({
-      phase: (i / botWaveCount) * Math.PI * 2,
-      speed: 0.015 + i * 0.003,
-      span: 0.3 + Math.random() * 0.4,
-      widthScale: 0.88 + Math.random() * 0.22
-    }));
-
-    // 4. Horizontal Disk Flowing Relativistic Light Beams
-    const diskBeamCount = 14;
-    const diskBeams = Array.from({ length: diskBeamCount }, (_, i) => ({
-      xProgress: Math.random(),
-      speed: 0.009 + Math.random() * 0.018,
-      yOffset: (Math.random() - 0.5) * 14,
-      length: 70 + Math.random() * 180,
-      thickness: 1.4 + Math.random() * 3.0,
-      color: Math.random() > 0.4 ? '#ffffff' : '#fbbf24',
-      opacity: 0.4 + Math.random() * 0.6
-    }));
-
     const render = () => {
-      ctx.clearRect(0, 0, width, height);
+      const elapsed = (Date.now() - startTime) * 0.001;
+      gl.uniform2f(uResolution, canvas.width, canvas.height);
+      gl.uniform1f(uTime, elapsed);
+      gl.uniform2f(uMouse, mouseRef.current.x, mouseRef.current.y);
 
-      // Exact image cover coordinates mapping
-      const imgAspect = 956 / 521;
-      const screenAspect = width / height;
-      let renderedW, renderedH, offsetX, offsetY;
-
-      if (screenAspect > imgAspect) {
-        renderedW = width;
-        renderedH = width / imgAspect;
-        offsetX = 0;
-        offsetY = (height - renderedH) / 2;
-      } else {
-        renderedH = height;
-        renderedW = height * imgAspect;
-        offsetX = (width - renderedW) / 2;
-        offsetY = 0;
-      }
-
-      const px = mouseRef.current.x;
-      const py = mouseRef.current.y;
-
-      // Exact black hole key landmarks from uploaded image
-      const cx = offsetX + 0.465 * renderedW + px;
-      const cy = offsetY + 0.505 * renderedH + py;
-      const r_photon = 0.145 * renderedH;
-      const r_top = 0.255 * renderedH;
-      const r_bot = 0.250 * renderedH;
-      const flareX = offsetX + 0.560 * renderedW + px;
-      const flareY = offsetY + 0.506 * renderedH + py;
-      const diskHalfWidth = 0.44 * renderedW;
-
-      const time = (Date.now() - startTime) * 0.001;
-
-      // --- A. ANIMATE EINSTEIN PHOTON RING ---
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(time * 0.45);
-      ctx.beginPath();
-      ctx.arc(0, 0, r_photon, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
-      ctx.lineWidth = 2.2;
-      ctx.shadowColor = '#f59e0b';
-      ctx.shadowBlur = 16;
-      ctx.setLineDash([48, 16, 28, 20]);
-      ctx.lineDashOffset = -time * 70;
-      ctx.stroke();
-      ctx.restore();
-
-      // --- B. ANIMATE TOP LENSED RING (Upper Arch Flowing Light) ---
-      topWaves.forEach((w, idx) => {
-        w.phase += w.speed;
-        const startA = Math.PI + Math.sin(w.phase) * 0.85;
-        const endA = startA + w.span;
-
-        const grad = ctx.createLinearGradient(
-          cx + Math.cos(startA) * r_top,
-          cy + Math.sin(startA) * r_top * 0.72,
-          cx + Math.cos(endA) * r_top,
-          cy + Math.sin(endA) * r_top * 0.72
-        );
-        grad.addColorStop(0, 'rgba(245, 158, 11, 0)');
-        grad.addColorStop(0.5, idx % 2 === 0 ? 'rgba(255, 255, 255, 0.9)' : 'rgba(56, 189, 248, 0.8)');
-        grad.addColorStop(1, 'rgba(245, 158, 11, 0)');
-
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.scale(1.0, 0.72);
-        ctx.beginPath();
-        ctx.arc(0, 0, r_top * w.widthScale, startA, endA);
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = 3.8 + Math.sin(time * 3 + idx) * 1.5;
-        ctx.shadowColor = '#fbbf24';
-        ctx.shadowBlur = 22;
-        ctx.stroke();
-        ctx.restore();
-      });
-
-      // --- C. ANIMATE BOTTOM LENSED RING (Lower Arch Flowing Light) ---
-      botWaves.forEach((w, idx) => {
-        w.phase += w.speed;
-        const startA = 0.15 + (w.phase % Math.PI);
-        const endA = startA + w.span;
-
-        const grad = ctx.createLinearGradient(
-          cx + Math.cos(startA) * r_bot,
-          cy + Math.sin(startA) * r_bot * 0.68,
-          cx + Math.cos(endA) * r_bot,
-          cy + Math.sin(endA) * r_bot * 0.68
-        );
-        grad.addColorStop(0, 'rgba(245, 158, 11, 0)');
-        grad.addColorStop(0.5, 'rgba(251, 191, 36, 0.8)');
-        grad.addColorStop(1, 'rgba(245, 158, 11, 0)');
-
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.scale(1.0, 0.68);
-        ctx.beginPath();
-        ctx.arc(0, 0, r_bot * w.widthScale, startA, endA);
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = 3.0 + Math.cos(time * 2.5 + idx) * 1.2;
-        ctx.shadowColor = '#f59e0b';
-        ctx.shadowBlur = 18;
-        ctx.stroke();
-        ctx.restore();
-      });
-
-      // --- D. ANIMATE EQUATORIAL ACCRETION DISK (Horizontal Light Beams) ---
-      diskBeams.forEach((bm) => {
-        bm.xProgress += bm.speed;
-        if (bm.xProgress > 1.0) {
-          bm.xProgress = 0;
-          bm.yOffset = (Math.random() - 0.5) * 14;
-        }
-
-        const currentX = cx - diskHalfWidth + bm.xProgress * (diskHalfWidth * 2);
-        const currentY = cy + bm.yOffset;
-
-        const distToFlare = Math.abs(currentX - flareX);
-        const flareProximity = Math.max(0, 1.0 - distToFlare / (0.18 * renderedW));
-        const effectiveAlpha = bm.opacity * (1.0 + flareProximity * 1.5);
-
-        const beamGrad = ctx.createLinearGradient(currentX - bm.length, currentY, currentX, currentY);
-        beamGrad.addColorStop(0, 'rgba(245, 158, 11, 0)');
-        beamGrad.addColorStop(0.7, bm.color);
-        beamGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(currentX - bm.length, currentY);
-        ctx.lineTo(currentX, currentY);
-        ctx.strokeStyle = beamGrad;
-        ctx.lineWidth = bm.thickness * (1.0 + flareProximity * 0.9);
-        ctx.globalAlpha = Math.min(1.0, effectiveAlpha);
-        ctx.shadowColor = bm.color;
-        ctx.shadowBlur = 14;
-        ctx.stroke();
-        ctx.restore();
-      });
-
-      // --- E. ANIMATE ORBITING RELATIVISTIC PARTICLES ---
-      particles.forEach((p) => {
-        p.angle += p.speed;
-
-        let pxCoord, pyCoord;
-        if (p.trackType === 0) {
-          const r = r_top * (1.0 + p.radiusOffset);
-          pxCoord = cx + Math.cos(p.angle) * r;
-          pyCoord = cy + Math.sin(p.angle) * r * 0.72;
-        } else if (p.trackType === 1) {
-          const r = r_bot * (1.0 + p.radiusOffset);
-          pxCoord = cx + Math.cos(p.angle) * r;
-          pyCoord = cy + Math.sin(p.angle) * r * 0.68;
-        } else {
-          const rX = diskHalfWidth * (0.3 + 0.7 * Math.abs(Math.cos(p.angle)));
-          pxCoord = cx + Math.cos(p.angle) * rX;
-          pyCoord = cy + Math.sin(p.angle) * 16 * (1.0 + p.radiusOffset);
-        }
-
-        const isApproaching = pxCoord < cx;
-        const dopplerBoost = isApproaching ? 1.4 : 0.85;
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(pxCoord, pyCoord, p.size * (isApproaching ? 1.25 : 0.9), 0, Math.PI * 2);
-        ctx.fillStyle = p.color;
-        ctx.globalAlpha = Math.min(1.0, p.alpha * dopplerBoost);
-        ctx.shadowColor = p.color;
-        ctx.shadowBlur = 12;
-        ctx.fill();
-        ctx.restore();
-      });
-
-      // --- F. DOPPLER BEACON FLARE BREATHING & OPTICAL RAYS ---
-      const flarePulse = 1.0 + 0.14 * Math.sin(time * 4.5);
-      const flareGrad = ctx.createRadialGradient(flareX, flareY, 0, flareX, flareY, 70 * flarePulse);
-      flareGrad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
-      flareGrad.addColorStop(0.2, 'rgba(251, 191, 36, 0.8)');
-      flareGrad.addColorStop(0.55, 'rgba(56, 189, 248, 0.4)');
-      flareGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-      ctx.save();
-      ctx.translate(flareX, flareY);
-      ctx.rotate(time * 0.25);
-      ctx.fillStyle = flareGrad;
-      ctx.beginPath();
-      ctx.arc(0, 0, 70 * flarePulse, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
-      ctx.lineWidth = 1.8;
-      ctx.shadowColor = '#ffffff';
-      ctx.shadowBlur = 16;
-      ctx.beginPath();
-      ctx.moveTo(-120 * flarePulse, 0);
-      ctx.lineTo(120 * flarePulse, 0);
-      ctx.moveTo(0, -40 * flarePulse);
-      ctx.lineTo(0, 40 * flarePulse);
-      ctx.stroke();
-      ctx.restore();
-
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
       animId = requestAnimationFrame(render);
     };
 
@@ -383,23 +458,11 @@ function Ton618CosmicBackground() {
 
   return (
     <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
-      {/* Exact Uploaded Interstellar Gargantua Black Hole Base Background */}
-      <img
-        src="/ton618_blackhole.jpg"
-        alt="TON 618 Interstellar Black Hole"
-        className="absolute inset-0 w-full h-full object-cover select-none pointer-events-none"
-        style={{
-          filter: 'contrast(1.08) brightness(0.96)'
-        }}
-      />
-
-      {/* Relativistic Accretion Ring Moving Light Animation Canvas */}
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 w-full h-full block pointer-events-none"
-        style={{
-          mixBlendMode: 'screen'
-        }}
+      {/* Real-time Relativistic Interstellar Gargantua WebGL Rings Simulation */}
+      <canvas 
+        ref={canvasRef} 
+        className="w-full h-full block" 
+        style={{ width: '100vw', height: '100vh' }}
       />
     </div>
   );
