@@ -82,7 +82,18 @@ def test_groups_and_streaming():
     print("Viewer joined group! Updated members:", join_res["members"])
     assert viewer_username in join_res["members"]
 
-    print("\n--- 4. Testing Starting Live Video Stream by Host ---")
+    print("\n--- 4. Testing Member Kick by Host Admin ---")
+    kick_res = post_json(f"{BASE_URL}/api/groups/{group_id}/kick/{viewer_username}", {}, token=host["token"])
+    print("Host kicked viewer! Updated members:", kick_res["members"])
+    assert viewer_username not in kick_res["members"]
+    assert kick_res["kicked"] == viewer_username
+
+    # Viewer re-joins for stream test
+    join_res2 = post_json(f"{BASE_URL}/api/groups/{group_id}/join", {}, token=viewer["token"])
+    assert viewer_username in join_res2["members"]
+    print("Viewer re-joined syndicate successfully.")
+
+    print("\n--- 5. Testing Starting Live Video Stream by Host ---")
     stream_on = patch_json(f"{BASE_URL}/api/groups/{group_id}/stream", {
         "is_live": True,
         "stream_title": "Live 0-Day Exploit Stream & Q&A"
@@ -97,13 +108,13 @@ def test_groups_and_streaming():
     assert matched["isLive"] is True
     print("Live stream confirmed in public groups directory:", matched["streamTitle"])
 
-    print("\n--- 5. Testing Group Viewers Count Endpoint ---")
+    print("\n--- 6. Testing Group Viewers Count Endpoint ---")
     viewers_res = get_json(f"{BASE_URL}/api/groups/{group_id}/viewers")
     print("Group viewers endpoint returned:", viewers_res)
     assert "viewers" in viewers_res
     assert isinstance(viewers_res["viewers"], int)
 
-    print("\n--- 6. Testing Ending Live Video Stream ---")
+    print("\n--- 7. Testing Ending Live Video Stream ---")
     stream_off = patch_json(f"{BASE_URL}/api/groups/{group_id}/stream", {
         "is_live": False,
         "stream_title": ""
@@ -111,7 +122,7 @@ def test_groups_and_streaming():
     print("Host ended stream:", stream_off)
     assert stream_off["isLive"] is False
 
-    print("\n--- 7. Testing Disbanding / Deleting Syndicate by Creator ---")
+    print("\n--- 8. Testing Disbanding / Deleting Syndicate by Creator ---")
     del_res = delete_json(f"{BASE_URL}/api/groups/{group_id}", token=host["token"])
     print("Host deleted syndicate:", del_res)
     assert del_res["status"] == "success"
@@ -120,7 +131,8 @@ def test_groups_and_streaming():
     assert not any(g["id"] == group_id for g in all_groups_after)
     print("Verified syndicate completely removed from directory.")
 
-    print("\n=== ALL GROUP, STREAMING, REAL VIEWER & DISBAND INTEGRATION TESTS PASSED! ===")
+    print("\n=== ALL GROUP, KICK MEMBER, STREAMING, REAL VIEWER & DISBAND INTEGRATION TESTS PASSED! ===")
 
 if __name__ == "__main__":
     test_groups_and_streaming()
+

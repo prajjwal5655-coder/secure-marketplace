@@ -9,7 +9,7 @@ import {
   Banknote, ToggleLeft, ToggleRight, Bell, History, Check, Clock, ExternalLink,
   PhoneCall, MessageCircle, Video, VideoOff, Radio, Tv, Users, Layers,
   Flame, Maximize2, Minimize2, Volume2, VolumeX, Cast, Compass, Skull,
-  PlayCircle, StopCircle, Mic, MicOff, Share2, Sliders, ScreenShare
+  PlayCircle, StopCircle, Mic, MicOff, Share2, Sliders, ScreenShare, UserX
 } from 'lucide-react';
 
 async function getDynamicRoomKey(roomId) {
@@ -135,6 +135,7 @@ export default function App() {
     }
   });
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const [membersModalGroup, setMembersModalGroup] = useState(null);
   const [groupFilter, setGroupFilter] = useState('all'); // 'all' | 'live' | 'joined'
   const [mobileGroupTab, setMobileGroupTab] = useState('room'); // 'list' | 'room'
   const [createGroupModal, setCreateGroupModal] = useState(false);
@@ -466,6 +467,18 @@ export default function App() {
             } else if (data.type === 'VIEWER_COUNT_UPDATE') {
               // Real-time live viewer count (0 if 0, 22 if 22)
               setViewerCount(typeof data.count === 'number' ? data.count : 0);
+            } else if (data.type === 'MEMBER_KICKED') {
+              // Target operative removed by host
+              if (user && data.kickedUser === user.username) {
+                showToast("⚠️ You were removed from this syndicate by the host.");
+              }
+              setGroups(prev => {
+                const updated = prev.map(g => g.id === selectedGroup?.id ? { ...g, members: data.members } : g);
+                localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+                return updated;
+              });
+              setSelectedGroup(prev => prev ? { ...prev, members: data.members } : prev);
+              setMembersModalGroup(prev => prev?.id === selectedGroup?.id ? { ...prev, members: data.members } : prev);
             }
 
             setDb(prev => {
@@ -1037,6 +1050,64 @@ export default function App() {
         setSelectedGroup(prev => ({ ...prev, members: (prev.members || []).filter(m => m !== user.username) }));
       }
       showToast("Left syndicate group.");
+    }
+  };
+
+  const handleKickMember = async (groupId, targetUsername) => {
+    if (!user) return;
+    const targetGroup = groups.find(g => g.id === groupId) || selectedGroup;
+    if (targetUsername === targetGroup?.creator) {
+      showToast("Cannot kick the syndicate host.");
+      return;
+    }
+    if (!window.confirm(`⚠️ Are you sure you want to remove operative @${targetUsername} from syndicate "${targetGroup?.name || 'this group'}"?`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/groups/${groupId}/kick/${targetUsername}`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${user.token}` 
+        }
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setGroups(prev => {
+          const updated = prev.map(g => g.id === groupId ? { ...g, members: data.members } : g);
+          localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+          return updated;
+        });
+        setSelectedGroup(prev => prev?.id === groupId ? { ...prev, members: data.members } : prev);
+        setMembersModalGroup(prev => prev?.id === groupId ? { ...prev, members: data.members } : prev);
+        showToast(`⛔ Operative @${targetUsername} was removed from the syndicate.`);
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Failed to remove operative.");
+      }
+    } catch (err) {
+      // Offline fallback
+      setGroups(prev => {
+        const updated = prev.map(g => {
+          if (g.id === groupId) {
+            return { ...g, members: (g.members || []).filter(m => m !== targetUsername) };
+          }
+          return g;
+        });
+        localStorage.setItem('nexus_persisted_groups', JSON.stringify(updated));
+        return updated;
+      });
+      setSelectedGroup(prev => {
+        if (prev?.id === groupId) {
+          return { ...prev, members: (prev.members || []).filter(m => m !== targetUsername) };
+        }
+        return prev;
+      });
+      if (membersModalGroup?.id === groupId) {
+        setMembersModalGroup(prev => prev ? { ...prev, members: (prev.members || []).filter(m => m !== targetUsername) } : prev);
+      }
+      showToast(`Operative @${targetUsername} removed.`);
     }
   };
 
@@ -1892,6 +1963,17 @@ export default function App() {
                 <MessageSquare className="w-4 h-4" /> Start Encrypted Comm
               </button>
             )}
+            {!isMe && user && selectedGroup && (selectedGroup.creator === user.username || user.role === 'admin') && selectedGroup.members?.includes(userProfileModal) && userProfileModal !== selectedGroup.creator && (
+              <button 
+                onClick={() => {
+                  handleKickMember(selectedGroup.id, userProfileModal);
+                  setUserProfileModal(null);
+                }}
+                className="w-full bg-rose-950 hover:bg-rose-900 text-rose-300 py-2.5 rounded-lg border border-rose-800 transition-colors flex items-center justify-center gap-2 text-xs uppercase tracking-wider font-bold"
+              >
+                <UserX className="w-4 h-4" /> Kick from #{selectedGroup.name}
+              </button>
+            )}
             {!user && (
               <p className="text-xs text-center text-slate-500 p-2">Authenticate to interact with this operative.</p>
             )}
@@ -1944,6 +2026,110 @@ export default function App() {
                 </div>
               ))
             )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderMembersModal = () => {
+    if (!membersModalGroup) return null;
+    const isCreator = user && (membersModalGroup.creator === user.username || user.role === 'admin');
+    const memberList = membersModalGroup.members || [membersModalGroup.creator];
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-sm p-4 font-mono" onClick={(e) => { if (e.target === e.currentTarget) setMembersModalGroup(null); }}>
+        <div className="bg-black border border-slate-700 rounded-xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
+          {/* Header */}
+          <div className="p-4 border-b border-slate-800 bg-slate-950/90 flex justify-between items-center shrink-0">
+            <div className="flex items-center gap-2">
+              <Users className="w-5 h-5 text-cyan-400" />
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                  Operatives Roster ({memberList.length})
+                </h2>
+                <p className="text-[10px] text-slate-500 font-sans">{membersModalGroup.name}</p>
+              </div>
+            </div>
+            <button onClick={() => setMembersModalGroup(null)} className="text-slate-500 hover:text-white">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Host Admin Banner */}
+          {isCreator && (
+            <div className="bg-rose-950/30 border-b border-rose-900/40 p-2.5 text-[11px] text-rose-300 flex items-center gap-2">
+              <Shield className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>Host Authority: You have permission to kick and remove operatives.</span>
+            </div>
+          )}
+
+          {/* Member list */}
+          <div className="p-4 overflow-y-auto space-y-2.5 flex-1 text-xs divide-y divide-slate-900">
+            {memberList.map((memberUsername, idx) => {
+              const isMemberHost = memberUsername === membersModalGroup.creator;
+              const isMe = user?.username === memberUsername;
+
+              return (
+                <div key={idx} className="flex items-center justify-between pt-2.5 first:pt-0">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center font-bold text-[11px] text-cyan-400">
+                      {memberUsername.slice(0, 2).toUpperCase()}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span 
+                          onClick={() => {
+                            setMembersModalGroup(null);
+                            setUserProfileModal(memberUsername);
+                          }}
+                          className="text-white font-bold text-xs cursor-pointer hover:text-cyan-400"
+                        >
+                          @{memberUsername}
+                        </span>
+                        {isMe && <span className="text-[9px] text-slate-500">(You)</span>}
+                      </div>
+                      <div>
+                        {isMemberHost ? (
+                          <span className="text-[9px] bg-amber-950/80 text-amber-400 border border-amber-800/80 px-1.5 py-0.2 rounded uppercase font-bold">
+                            👑 Host / Creator
+                          </span>
+                        ) : (
+                          <span className="text-[9px] bg-slate-900 text-cyan-400 border border-slate-800 px-1.5 py-0.2 rounded uppercase">
+                            Operative
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {!isMe && (
+                      <button
+                        onClick={() => {
+                          setMembersModalGroup(null);
+                          openPrivateChat(memberUsername);
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-cyan-400 bg-slate-950 hover:bg-slate-900 rounded border border-slate-800 transition-colors"
+                        title={`Encrypted comms with @${memberUsername}`}
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    {isCreator && !isMemberHost && (
+                      <button
+                        onClick={() => handleKickMember(membersModalGroup.id, memberUsername)}
+                        className="bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 text-[10px] font-bold px-2.5 py-1 rounded flex items-center gap-1 transition-colors shadow-sm"
+                        title={`Kick operative @${memberUsername} from syndicate`}
+                      >
+                        <UserX className="w-3 h-3" /> Kick
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -2248,6 +2434,16 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {/* Operatives Roster / Kick Management Modal Trigger */}
+                    <button 
+                      onClick={() => setMembersModalGroup(selectedGroup)}
+                      className="bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700 hover:border-cyan-500/50 px-2.5 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 shadow-sm transition-colors"
+                      title="View syndicate operatives roster and manage members"
+                    >
+                      <Users className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Operatives ({selectedGroup.members?.length || 1})</span>
+                    </button>
+
                     {/* Disband Syndicate button for creator / admin */}
                     {isCreator && (
                       <button 
@@ -2449,8 +2645,19 @@ export default function App() {
                               >
                                 @{msg.sender}
                               </span>
-                              {msg.sender === selectedGroup.creator && (
-                                <span className="text-[8px] bg-rose-950 text-rose-400 border border-rose-900 px-1 py-0.2 rounded uppercase">Host</span>
+                              {msg.sender === selectedGroup.creator ? (
+                                <span className="text-[8px] bg-amber-950 text-amber-400 border border-amber-900 px-1 py-0.2 rounded uppercase font-bold">Host</span>
+                              ) : (
+                                isCreator && msg.sender !== 'SYSTEM_SYNDICATE_BOT' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleKickMember(selectedGroup.id, msg.sender)}
+                                    className="text-[8px] bg-rose-950/90 hover:bg-rose-900 text-rose-300 border border-rose-800 px-1.5 py-0.2 rounded uppercase font-bold flex items-center gap-0.5 ml-1 transition-colors"
+                                    title={`Remove operative @${msg.sender} from syndicate`}
+                                  >
+                                    <UserX className="w-2.5 h-2.5" /> Kick
+                                  </button>
+                                )
                               )}
                             </div>
                           )}
@@ -2519,6 +2726,7 @@ export default function App() {
       {renderAuthModal()}
       {renderCreateGroupModal()}
       {renderStreamModal()}
+      {renderMembersModal()}
       {renderTopUpModal()}
       {renderUserProfileModal()}
       {renderNotificationsModal()}

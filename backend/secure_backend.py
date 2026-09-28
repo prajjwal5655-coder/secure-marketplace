@@ -974,6 +974,66 @@ async def leave_group(group_id: str, authorization: Optional[str] = Header(None)
     conn.close()
     return {"status": "success", "group_id": group_id, "members": members}
 
+@app.post("/api/groups/{group_id}/kick/{target_username}")
+async def kick_group_member(group_id: str, target_username: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    
+    token = authorization.split(" ")[1]
+    user_payload = verify_jwt_token(token)
+    admin_username = user_payload["username"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT creator, members_json, name FROM dark_groups WHERE id = ?", (group_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Syndicate group not found.")
+
+    creator, members_str, group_name = row[0], row[1], row[2]
+    if creator != admin_username and user_payload.get("role") != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Unauthorized: Only syndicate creator / admin can remove members.")
+
+    if target_username == creator:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Cannot kick the syndicate host/creator.")
+
+    try:
+        members = json.loads(members_str)
+    except Exception:
+        members = []
+
+    if target_username in members:
+        members.remove(target_username)
+        cursor.execute("UPDATE dark_groups SET members_json = ? WHERE id = ?", (json.dumps(members), group_id))
+        
+        timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        kick_msg = f"⛔ Operative @{target_username} was removed from the syndicate by host @{admin_username}."
+        cursor.execute(
+            "INSERT INTO messages (room_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+            (f"group_{group_id}", "SYSTEM_SYNDICATE_BOT", kick_msg, timestamp_now)
+        )
+        conn.commit()
+
+        # Broadcast kick event
+        kick_event = {
+            "id": int(time.time() * 1000),
+            "sender": "SYSTEM_SYNDICATE_BOT",
+            "text": kick_msg,
+            "type": "MEMBER_KICKED",
+            "kickedUser": target_username,
+            "admin": admin_username,
+            "members": members,
+            "timestamp": timestamp_now
+        }
+        await manager.broadcast_raw(json.dumps(kick_event), f"group_{group_id}")
+
+    conn.close()
+    return {"status": "success", "group_id": group_id, "kicked": target_username, "members": members}
+
 @app.patch("/api/groups/{group_id}/stream")
 async def toggle_group_stream(group_id: str, req: GroupStreamToggleModel, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
