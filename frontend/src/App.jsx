@@ -134,7 +134,14 @@ export default function App() {
       return [];
     }
   });
-  const [selectedGroup, setSelectedGroup] = useState(null);
+  const [selectedGroup, setSelectedGroup] = useState(() => {
+    try {
+      const saved = localStorage.getItem('nexus_selected_group');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [membersModalGroup, setMembersModalGroup] = useState(null);
   const [groupFilter, setGroupFilter] = useState('all'); // 'all' | 'live' | 'joined'
   const [mobileGroupTab, setMobileGroupTab] = useState('room'); // 'list' | 'room'
@@ -217,12 +224,13 @@ export default function App() {
         if (Array.isArray(data) && data.length > 0) {
           setGroups(data);
           localStorage.setItem('nexus_persisted_groups', JSON.stringify(data));
-          if (!selectedGroup && data.length > 0) {
-            setSelectedGroup(data[0]);
-          } else if (selectedGroup) {
-            const updated = data.find(g => g.id === selectedGroup.id);
-            if (updated) setSelectedGroup(updated);
-          }
+          setSelectedGroup(prev => {
+            if (!prev) {
+              return data[0];
+            }
+            const updated = data.find(g => g.id === prev.id);
+            return updated ? updated : prev;
+          });
         }
       }
     } catch (err) {
@@ -2360,7 +2368,11 @@ export default function App() {
                   return (
                     <div 
                       key={grp.id}
-                      onClick={() => { setSelectedGroup(grp); setMobileGroupTab('room'); }}
+                      onClick={() => { 
+                        setSelectedGroup(grp); 
+                        try { localStorage.setItem('nexus_selected_group', JSON.stringify(grp)); } catch (e) {}
+                        setMobileGroupTab('room'); 
+                      }}
                       className={`p-3 rounded-lg cursor-pointer transition-all border pt-3 first:pt-3 ${isSelected ? 'bg-slate-900/90 border-cyan-500/80 shadow-lg' : 'bg-slate-950 border-slate-800/80 hover:border-slate-700'}`}
                     >
                       <div className="flex justify-between items-start mb-1">
